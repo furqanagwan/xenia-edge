@@ -2474,16 +2474,27 @@ X_STATUS Emulator::PrepareLaunch(const std::filesystem::path& path,
     }
   }
 
+  // xbox.xex only relaunches into the XeFu build it picks, which loads the
+  // same storage.
+  const bool xefu_dispatcher =
+      title_id_ == kXeFuTitleId &&
+      IsXeFuDispatcher(vfs::ExtractXexMetadata(
+          reinterpret_cast<const uint8_t*>(module->xex_header()),
+          module->xex_header()->header_size));
+
   // Initialize shader storage asynchronously - pipeline compilation happens in
   // background while the game goes through its normal startup (loading screens,
   // intro videos, etc.). With async_shader_compilation enabled, draws are
   // skipped until pipelines are ready, so this is safe. By the time actual
   // gameplay starts, most cached pipelines should be compiled.
-  if (graphics_system_) {
+  if (graphics_system_ && !xefu_dispatcher) {
+    // XeFu's shaders come from the original Xbox game it runs, its own without
+    // one.
+    const uint32_t storage_title_id = game_config_title_id();
     on_shader_storage_initialization(true);
     graphics_system_->InitializeShaderStorage(
-        cache_root_, title_id_.value(), false,
-        [this]() { on_shader_storage_initialization(false); });
+        cache_root_, storage_title_id ? storage_title_id : title_id_.value(),
+        false, [this]() { on_shader_storage_initialization(false); });
   }
 
   auto main_thread = kernel_state_->LaunchModule(module);
