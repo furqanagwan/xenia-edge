@@ -7,7 +7,6 @@
  ******************************************************************************
  */
 
-#include <atomic>
 #include <cctype>
 #include <cstring>
 #include <string>
@@ -632,29 +631,17 @@ dword_result_t NetDll_XNetDnsLookup_entry(dword_t caller, lpstring_t host,
     result.status = int32_t(X_WSAError::X_WSAHOST_NOT_FOUND);
     if (host) {
       const std::string name(host.value());
-      // A lookup blocks for as long as the resolver takes. On a fiber it runs
-      // on an I/O worker so the other fibers on this host thread keep running.
-      if (GuestScheduler::CurrentThreadOffloadsBlockingCalls()) {
-        auto* scheduler = kernel_state()->guest_scheduler();
-        std::atomic<bool> done{false};
-        scheduler->PostHostCall(
-            [&name, &result, &done]() {
-              // The fiber waits for |done| however the lookup ends.
-              try {
-                ResolveDnsHost(name, &result);
-              } catch (...) {
-              }
-              done.store(true, std::memory_order_release);
-            },
-            GuestScheduler::BlockingCallClass::kConcurrent);
-        // The worker writes into this frame so a terminate must not end the
-        // wait.
-        while (!done.load(std::memory_order_acquire)) {
-          scheduler->BlockCurrentThread(0, 0, false, false);
-        }
-      } else {
-        ResolveDnsHost(name, &result);
-      }
+      // A lookup blocks for as long as the resolver takes.
+      kernel_state()->RunBlockingIo(
+          [&name, &result]() {
+            // Nothing may throw out of here, as the wait ends only once this
+            // returns.
+            try {
+              ResolveDnsHost(name, &result);
+            } catch (...) {
+            }
+          },
+          GuestScheduler::BlockingCallClass::kConcurrent);
       XELOGD("XNetDnsLookup({}) = {} addresses", name, uint32_t(result.cina));
     }
     auto dns_guest = kernel_memory()->SystemHeapAlloc(sizeof(XNDNS));
