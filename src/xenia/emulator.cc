@@ -65,6 +65,7 @@
 #include "xenia/vfs/file.h"
 #include "xenia/vfs/virtual_file_system.h"
 #include "xenia/vfs/xbe_metadata.h"
+#include "xenia/vfs/xex_metadata.h"
 
 #if XE_ARCH_AMD64
 #include "xenia/cpu/backend/x64/x64_backend.h"
@@ -865,6 +866,12 @@ bool Emulator::KeepsXboxGame(const std::filesystem::path& path) const {
   return std::filesystem::equivalent(path.parent_path(), xefu_path(), error);
 }
 
+// Whether an executable is xbox.xex, which picks the XeFu build for a game.
+// The builds share its title ID but not its original PE name.
+static bool IsXeFuDispatcher(const std::optional<vfs::XexMetadata>& xex) {
+  return xex && xe::utf8::equal_case(xex->module_name, "xboxc.exe");
+}
+
 X_STATUS Emulator::LaunchXboxOriginal(const std::filesystem::path& path,
                                       std::string_view xbe_name) {
   // As on the console, xbox.xex picks the XeFu build for the game and launches
@@ -883,7 +890,7 @@ X_STATUS Emulator::LaunchXboxOriginal(const std::filesystem::path& path,
   // offset XeFu reads it from too. Its first word is 0 from the dashboard and
   // 1 from xbox.xex starting XeFu.
   const uint32_t launched_by =
-      xe::utf8::equal_case(cvars::xefu_launcher, "xbox.xex") ? 0 : 1;
+      IsXeFuDispatcher(vfs::ExtractXexMetadata(launcher)) ? 0 : 1;
   constexpr size_t kLaunchDataSize = 0x3FC;
   constexpr size_t kLaunchDataPathOffset = 0x1FC;
   const std::string xbe_path = "\\Device\\Cdrom0\\" + std::string(xbe_name);
