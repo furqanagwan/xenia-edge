@@ -217,8 +217,14 @@ X_STATUS GraphicsSystem::Setup(cpu::Processor* processor,
   frame_limiter_worker_thread_->set_can_debugger_suspend(true);
   frame_limiter_worker_thread_->set_name("GPU Frame limiter");
   frame_limiter_worker_thread_->Create();
+  // Linux only sleeps, so kLowest (nice 15) would just add wake-up latency.
+#if XE_PLATFORM_LINUX
+  frame_limiter_worker_thread_->thread()->set_priority(
+      threading::ThreadPriority::kNormal);
+#else
   frame_limiter_worker_thread_->thread()->set_priority(
       threading::ThreadPriority::kLowest);
+#endif
   if (cvars::trace_gpu_stream) {
     BeginTracing();
   }

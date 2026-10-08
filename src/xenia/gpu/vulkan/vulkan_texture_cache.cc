@@ -1977,13 +1977,15 @@ bool VulkanTextureCache::LoadTextureDataFromResidentMemoryImpl(Texture& texture,
   } else {
     // Same layout/usage but another upload may have written the image earlier
     // in this submission - emit a TRANSFER_WRITE -> TRANSFER_WRITE barrier so
-    // the next copy into it is ordered after any prior one.
+    // the next copy into it is ordered after any prior one. The masks are
+    // equal, so it must not be skipped as a no-op.
     command_processor_.PushImageMemoryBarrier(
         vulkan_texture.image(), ui::vulkan::util::InitializeSubresourceRange(),
         VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
         VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_TRANSFER_WRITE_BIT,
         VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_QUEUE_FAMILY_IGNORED,
+        VK_QUEUE_FAMILY_IGNORED, false);
   }
   command_processor_.SubmitBarriers(true);
   command_processor_.InsertDebugMarker(
