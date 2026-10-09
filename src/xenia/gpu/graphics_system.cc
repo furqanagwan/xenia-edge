@@ -301,6 +301,8 @@ uint32_t GraphicsSystem::ReadRegister(uint32_t addr) {
       return 0x08100748;
     case XE_GPU_REG_RB_BC_CONTROL:
       return 0x0000200E;
+    case XE_GPU_REG_RB_HSIO_INTERFACE_ALIGNER_VALUE:
+      return 0x00BBBBBB;
     case XE_GPU_REG_D1MODE_V_COUNTER: {
       // Free-running scanline counter, like Xenos drives off the pixel clock.
       // Cycles 0..(total_lines-1) every frame, including the vertical-blank
@@ -355,6 +357,10 @@ void GraphicsSystem::WriteRegister(uint32_t addr, uint32_t value) {
   switch (r) {
     case 0x01C5:  // CP_RB_WPTR
       command_processor_->UpdateWritePointer(value);
+      break;
+    case 0x0F01:  // RB_BC_CONTROL
+      break;
+    case 0x0F2D:  // RB_HSIO_INTERFACE_ALIGNER_VALUE
       break;
     case 0x1844:  // AVIVO_D1GRPH_PRIMARY_SURFACE_ADDRESS
       break;

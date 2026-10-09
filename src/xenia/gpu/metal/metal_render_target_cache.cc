@@ -3545,6 +3545,13 @@ bool MetalRenderTargetCache::Resolve(Memory& memory, uint32_t& written_address,
 
   bool is_depth = resolve_info.IsCopyingDepth();
 
+  if (resolve_info.copy_dest_extent_length &&
+      resolve_info.rb_copy_control.copy_command ==
+          xenos::CopyCommand::kConvertTo1111) {
+    XELOGW("MetalResolve: resolve copy command 2 is not supported");
+    resolve_info.copy_dest_extent_length = 0;
+  }
+
   if (!resolve_info.copy_dest_extent_length) {
     return true;
   }
