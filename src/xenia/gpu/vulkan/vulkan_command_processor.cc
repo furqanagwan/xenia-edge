@@ -3719,10 +3719,14 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
     CheckSubmissionCompletionAndDeviceLoss(sampler_overflow_await_submission);
   }
 
+  // Put the window offset into the EDRAM bases when possible.
+  int32_t window_offset_tiles = render_target_cache_->GetWindowOffsetTiles(
+      regs, normalized_depth_control, normalized_color_mask, frame_current_);
+
   // Set up the render targets - this may perform dispatches and draws.
-  if (!render_target_cache_->Update(is_rasterization_done,
-                                    normalized_depth_control,
-                                    normalized_color_mask, *vertex_shader)) {
+  if (!render_target_cache_->Update(
+          is_rasterization_done, normalized_depth_control,
+          normalized_color_mask, *vertex_shader, window_offset_tiles)) {
     return false;
   }
   // An async pipeline stand-in (a placeholder, or skipping the draw) is only
@@ -3924,7 +3928,7 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
       host_render_targets_used &&
           render_target_cache_->depth_float24_convert_in_pixel_shader(),
       host_render_targets_used, pixel_shader && pixel_shader->writes_depth());
-  gviargs.SetupRegisterValues(regs);
+  gviargs.SetupRegisterValues(regs, window_offset_tiles != 0);
 
   if (gviargs == previous_viewport_info_args_) {
     viewport_info = previous_viewport_info_;
@@ -3936,7 +3940,8 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
   // Update dynamic graphics pipeline state.
   UpdateDynamicState(viewport_info, primitive_polygonal,
                      normalized_depth_control, draw_resolution_scale_x,
-                     draw_resolution_scale_y, apply_host_depth_polygon_offset);
+                     draw_resolution_scale_y, apply_host_depth_polygon_offset,
+                     window_offset_tiles != 0);
 
   auto vgt_draw_initiator = regs.Get<reg::VGT_DRAW_INITIATOR>();
 
@@ -3956,7 +3961,8 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
       primitive_polygonal, primitive_processing_result, shader_32bit_index_dma,
       viewport_info, used_texture_mask, normalized_depth_control,
       normalized_color_mask,
-      apply_host_depth_polygon_offset ? &host_depth_polygon_offset : nullptr);
+      apply_host_depth_polygon_offset ? &host_depth_polygon_offset : nullptr,
+      window_offset_tiles);
 
   // Whether we bound the placeholder pipeline (vs the real one). Derived from
   // the handle actually bound, so it's consistent with current_pipeline even if
@@ -4185,7 +4191,8 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
         primitive_polygonal, primitive_processing_result,
         shader_32bit_index_dma, viewport_info, used_texture_mask,
         normalized_depth_control, normalized_color_mask,
-        apply_host_depth_polygon_offset ? &host_depth_polygon_offset : nullptr);
+        apply_host_depth_polygon_offset ? &host_depth_polygon_offset : nullptr,
+        window_offset_tiles);
     if (!UpdateBindings(vertex_shader, pixel_shader)) {
       return false;
     }
@@ -6087,7 +6094,7 @@ void VulkanCommandProcessor::UpdateDynamicState(
     const draw_util::ViewportInfo& viewport_info, bool primitive_polygonal,
     reg::RB_DEPTHCONTROL normalized_depth_control,
     uint32_t draw_resolution_scale_x, uint32_t draw_resolution_scale_y,
-    bool depth_bias_in_pixel_shader) {
+    bool depth_bias_in_pixel_shader, bool window_offset_in_edram) {
 #if XE_GPU_FINE_GRAINED_DRAW_SCOPES
   SCOPE_profile_cpu_f("gpu");
 #endif  // XE_GPU_FINE_GRAINED_DRAW_SCOPES
@@ -6122,7 +6129,7 @@ void VulkanCommandProcessor::UpdateDynamicState(
 
   // Scissor.
   draw_util::Scissor scissor;
-  draw_util::GetScissor(regs, scissor);
+  draw_util::GetScissor(regs, scissor, true, window_offset_in_edram);
   // Scale the scissor to match the render target resolution scale
   scissor.offset[0] *= draw_resolution_scale_x;
   scissor.offset[1] *= draw_resolution_scale_y;
@@ -6321,7 +6328,8 @@ void VulkanCommandProcessor::UpdateSystemConstantValues(
     bool shader_32bit_index_dma, const draw_util::ViewportInfo& viewport_info,
     uint32_t used_texture_mask, reg::RB_DEPTHCONTROL normalized_depth_control,
     uint32_t normalized_color_mask,
-    const draw_util::HostDepthPolygonOffset* host_depth_polygon_offset) {
+    const draw_util::HostDepthPolygonOffset* host_depth_polygon_offset,
+    int32_t window_offset_tiles) {
 #if XE_GPU_FINE_GRAINED_DRAW_SCOPES
   SCOPE_profile_cpu_f("gpu");
 #endif  // XE_GPU_FINE_GRAINED_DRAW_SCOPES
@@ -6437,8 +6445,8 @@ void VulkanCommandProcessor::UpdateSystemConstantValues(
     WriteFragmentShaderInterlockSystemConstants(
         system_constants_, flags, dirty, regs, primitive_polygonal,
         normalized_depth_control, normalized_color_mask,
-        draw_resolution_scale_x, draw_resolution_scale_y,
-        zpd_fsi_counter_index);
+        draw_resolution_scale_x, draw_resolution_scale_y, zpd_fsi_counter_index,
+        window_offset_tiles);
   } else {
     // Hybrid queries on the host render target path count pre-test coverage
     // into the same counter slot from the pixel shader.
@@ -6532,6 +6540,19 @@ void VulkanCommandProcessor::UpdateSystemConstantValues(
       std::memset(system_constants_.user_clip_planes, 0,
                   sizeof(system_constants_.user_clip_planes));
     }
+  }
+
+  // Window offset carried in the EDRAM bases.
+  float param_gen_window_offset[2] = {0.0f, 0.0f};
+  if (window_offset_tiles) {
+    auto pa_sc_window_offset = regs.Get<reg::PA_SC_WINDOW_OFFSET>();
+    param_gen_window_offset[0] = float(pa_sc_window_offset.window_x_offset);
+    param_gen_window_offset[1] = float(pa_sc_window_offset.window_y_offset);
+  }
+  for (uint32_t i = 0; i < 2; ++i) {
+    dirty |= system_constants_.param_gen_window_offset[i] !=
+             param_gen_window_offset[i];
+    system_constants_.param_gen_window_offset[i] = param_gen_window_offset[i];
   }
 
   // Tessellation constants. The factor range has 1.0 added per Xbox 360 docs.

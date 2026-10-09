@@ -2742,10 +2742,14 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
     }
   }
 
+  // Put the window offset into the EDRAM bases when possible.
+  int32_t window_offset_tiles = render_target_cache_->GetWindowOffsetTiles(
+      regs, normalized_depth_control, normalized_color_mask, frame_current_);
+
   // Set up the render targets - this may perform dispatches and draws.
-  if (!render_target_cache_->Update(is_rasterization_done,
-                                    normalized_depth_control,
-                                    normalized_color_mask, *vertex_shader)) {
+  if (!render_target_cache_->Update(
+          is_rasterization_done, normalized_depth_control,
+          normalized_color_mask, *vertex_shader, window_offset_tiles)) {
     return false;
   }
   // An async pipeline stand-in (a placeholder, or skipping the draw) is only
@@ -2971,7 +2975,7 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
       host_render_targets_used &&
           render_target_cache_->depth_float24_convert_in_pixel_shader(),
       host_render_targets_used, pixel_shader && pixel_shader->writes_depth());
-  gviargs.SetupRegisterValues(regs);
+  gviargs.SetupRegisterValues(regs, window_offset_tiles != 0);
 
   if (gviargs == previous_viewport_info_args_) {
     viewport_info = previous_viewport_info_;
@@ -2982,7 +2986,7 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
   }
   // todo: use SIMD for getscissor + scaling here, should reduce code size more
   draw_util::Scissor scissor;
-  draw_util::GetScissor(regs, scissor);
+  draw_util::GetScissor(regs, scissor, true, window_offset_tiles != 0);
 #if XE_ARCH_AMD64 == 1
   __m128i* scisp = (__m128i*)&scissor;
   *scisp = _mm_mullo_epi32(
@@ -3007,7 +3011,7 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
           normalized_depth_control, normalized_color_mask,
           apply_host_depth_polygon_offset ? &host_depth_polygon_offset
                                           : nullptr,
-          interpreter_placeholder)) {
+          interpreter_placeholder, window_offset_tiles)) {
     return false;
   }
   // Must not call anything that can change the descriptor heap from now on!
@@ -3047,6 +3051,15 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
                 vfetch_index, vfetch_constant.dword_0, vfetch_constant.dword_1);
             return false;
           default:
+            if (cvars::gpu_allow_invalid_fetch_constants) {
+              XELOGW(
+                  "Vertex fetch constant {} ({:08X} {:08X}) has a texture "
+                  "type - allowing due to "
+                  "--gpu_allow_invalid_fetch_constants=true.",
+                  vfetch_index, vfetch_constant.dword_0,
+                  vfetch_constant.dword_1);
+              break;
+            }
             XELOGW(
                 "Vertex fetch constant {} ({:08X} {:08X}) is completely "
                 "invalid!",
@@ -4259,7 +4272,7 @@ bool D3D12CommandProcessor::UpdateBindingsMesa(
     reg::RB_DEPTHCONTROL normalized_depth_control,
     uint32_t normalized_color_mask,
     const draw_util::HostDepthPolygonOffset* host_depth_polygon_offset,
-    bool interpreter_placeholder) {
+    bool interpreter_placeholder, int32_t window_offset_tiles) {
 #if XE_GPU_FINE_GRAINED_DRAW_SCOPES
   SCOPE_profile_cpu_f("gpu");
 #endif  // XE_GPU_FINE_GRAINED_DRAW_SCOPES
@@ -4389,6 +4402,13 @@ bool D3D12CommandProcessor::UpdateBindingsMesa(
   sc.tessellation_vertex_index_min_max[0] = regs[XE_GPU_REG_VGT_MIN_VTX_INDX];
   sc.tessellation_vertex_index_min_max[1] = regs[XE_GPU_REG_VGT_MAX_VTX_INDX];
 
+  // Window offset carried in the EDRAM bases.
+  if (window_offset_tiles) {
+    auto pa_sc_window_offset = regs.Get<reg::PA_SC_WINDOW_OFFSET>();
+    sc.param_gen_window_offset[0] = float(pa_sc_window_offset.window_x_offset);
+    sc.param_gen_window_offset[1] = float(pa_sc_window_offset.window_y_offset);
+  }
+
   // Point size, and the NDC size of a guest pixel, which the line geometry
   // shader also uses to expand resolution-scaled lines to 1 guest pixel wide.
   if (vgt_draw_initiator.prim_type == xenos::PrimitiveType::kPointList ||
@@ -4511,8 +4531,8 @@ bool D3D12CommandProcessor::UpdateBindingsMesa(
     WriteFragmentShaderInterlockSystemConstants(
         sc, sc.flags, fsi_dirty, regs, primitive_polygonal,
         normalized_depth_control, normalized_color_mask,
-        draw_resolution_scale_x, draw_resolution_scale_y,
-        zpd_fsi_counter_index);
+        draw_resolution_scale_x, draw_resolution_scale_y, zpd_fsi_counter_index,
+        window_offset_tiles);
   } else {
     // Hybrid queries on the host render target path count pre-test coverage
     // into the same counter slot from the pixel shader.

@@ -546,7 +546,7 @@ class D3D12CommandProcessor final : public CommandProcessor {
       reg::RB_DEPTHCONTROL normalized_depth_control,
       uint32_t normalized_color_mask,
       const draw_util::HostDepthPolygonOffset* host_depth_polygon_offset,
-      bool interpreter_placeholder);
+      bool interpreter_placeholder, int32_t window_offset_tiles);
   // Resolves a sampler to its index in the bindless sampler heap for the Mesa
   // path, allocating and writing the descriptor on first use. Returns
   // UINT32_MAX if the heap is full, so the caller switches to a fresh heap and

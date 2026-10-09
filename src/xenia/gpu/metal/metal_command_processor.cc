@@ -3075,9 +3075,10 @@ bool MetalCommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
     normalized_color_mask = pixel_shader ? draw_util::GetNormalizedColorMask(
                                                regs, ps_writes_color_targets)
                                          : 0;
-    if (!render_target_cache_->Update(is_rasterization_done,
-                                      normalized_depth_control,
-                                      normalized_color_mask, *vertex_shader)) {
+    // The window offset stays in the viewport on Metal.
+    if (!render_target_cache_->Update(
+            is_rasterization_done, normalized_depth_control,
+            normalized_color_mask, *vertex_shader, 0)) {
       XELOGE(
           "MetalCommandProcessor::IssueDraw - RenderTargetCache::Update "
           "failed");
@@ -3206,7 +3207,7 @@ void MetalCommandProcessor::ComputeDrawViewportInfo(
       true, kViewportBoundsMax, kViewportBoundsMax, false,
       normalized_depth_control, convert_z_to_float24, true,
       pixel_shader && pixel_shader->writes_depth());
-  gviargs.SetupRegisterValues(regs);
+  gviargs.SetupRegisterValues(regs, false);
   if (gviargs == previous_viewport_info_args_) {
     viewport_info_out = previous_viewport_info_;
   } else {

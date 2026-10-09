@@ -1053,11 +1053,12 @@ void D3D12RenderTargetCache::BeginSubmission() {
 
 bool D3D12RenderTargetCache::Update(
     bool is_rasterization_done, reg::RB_DEPTHCONTROL normalized_depth_control,
-    uint32_t normalized_color_mask, const Shader& vertex_shader) {
+    uint32_t normalized_color_mask, const Shader& vertex_shader,
+    int32_t window_offset_tiles) {
   SCOPE_profile_cpu_f("gpu");
-  if (!RenderTargetCache::Update(is_rasterization_done,
-                                 normalized_depth_control,
-                                 normalized_color_mask, vertex_shader)) {
+  if (!RenderTargetCache::Update(
+          is_rasterization_done, normalized_depth_control,
+          normalized_color_mask, vertex_shader, window_offset_tiles)) {
     return false;
   }
   switch (GetPath()) {
@@ -2408,9 +2409,7 @@ void D3D12RenderTargetCache::PerformTransfersAndResolveClears(
       Transfer::Rectangle
           transfer_rectangles[Transfer::kMaxRectanglesWithCutout];
       uint32_t transfer_rectangle_count = transfer.GetRectangles(
-          dest_rt_key.base_tiles, dest_rt_key.pitch_tiles_at_32bpp,
-          dest_rt_key.msaa_samples, false, transfer_rectangles,
-          resolve_clear_rectangle);
+          dest_rt_key, transfer_rectangles, resolve_clear_rectangle);
       assert_not_zero(transfer_rectangle_count);
       HostDepthStoreRectangleConstant host_depth_store_rectangle_constant;
       for (uint32_t j = 0; j < transfer_rectangle_count; ++j) {
@@ -2645,7 +2644,6 @@ void D3D12RenderTargetCache::PerformTransfersAndResolveClears(
       }
 
       uint32_t dest_pitch_tiles = dest_rt_key.GetPitchTiles();
-      bool dest_is_64bpp = dest_rt_key.Is64bpp();
       // GetRectangles returns guest pixels.
       // Scale to the destination.
       float pixels_to_ndc_x =
@@ -2722,10 +2720,8 @@ void D3D12RenderTargetCache::PerformTransfersAndResolveClears(
             new_transfer_shader_key.mode =
                 source_rt_key.is_depth ? EdramTransferMode::kDepthToStencilBit
                                        : EdramTransferMode::kColorToStencilBit;
-            stencil_clear_rectangle_count +=
-                transfer.GetRectangles(dest_rt_key.base_tiles, dest_pitch_tiles,
-                                       dest_rt_key.msaa_samples, dest_is_64bpp,
-                                       nullptr, resolve_clear_rectangle);
+            stencil_clear_rectangle_count += transfer.GetRectangles(
+                dest_rt_key, nullptr, resolve_clear_rectangle);
           } else {
             if (dest_rt_key.is_depth) {
               if (host_depth_source_d3d12_rt) {
@@ -2781,8 +2777,7 @@ void D3D12RenderTargetCache::PerformTransfersAndResolveClears(
           Transfer::Rectangle transfer_stencil_clear_rectangles
               [Transfer::kMaxRectanglesWithCutout];
           uint32_t transfer_stencil_clear_rectangle_count =
-              transfer.GetRectangles(dest_rt_key.base_tiles, dest_pitch_tiles,
-                                     dest_rt_key.msaa_samples, dest_is_64bpp,
+              transfer.GetRectangles(dest_rt_key,
                                      transfer_stencil_clear_rectangles,
                                      resolve_clear_rectangle);
           for (uint32_t j = 0; j < transfer_stencil_clear_rectangle_count;
@@ -2838,18 +2833,14 @@ void D3D12RenderTargetCache::PerformTransfersAndResolveClears(
         auto it_merged_first = it, it_merged_last = it;
         uint32_t transfer_rectangle_count =
             transfer_invocation_first.transfer.GetRectangles(
-                dest_rt_key.base_tiles, dest_pitch_tiles,
-                dest_rt_key.msaa_samples, dest_is_64bpp, nullptr,
-                resolve_clear_rectangle);
+                dest_rt_key, nullptr, resolve_clear_rectangle);
         for (auto it_merge = std::next(it_merged_first);
              it_merge != current_transfer_invocations_.cend(); ++it_merge) {
           if (!transfer_invocation_first.CanBeMergedIntoOneDraw(*it_merge)) {
             break;
           }
           transfer_rectangle_count += it_merge->transfer.GetRectangles(
-              dest_rt_key.base_tiles, dest_pitch_tiles,
-              dest_rt_key.msaa_samples, dest_is_64bpp, nullptr,
-              resolve_clear_rectangle);
+              dest_rt_key, nullptr, resolve_clear_rectangle);
           it_merged_last = it_merge;
         }
         assert_not_zero(transfer_rectangle_count);
@@ -2923,10 +2914,9 @@ void D3D12RenderTargetCache::PerformTransfersAndResolveClears(
           Transfer::Rectangle transfer_invocation_rectangles
               [Transfer::kMaxRectanglesWithCutout];
           uint32_t transfer_invocation_rectangle_count =
-              it_merged->transfer.GetRectangles(
-                  dest_rt_key.base_tiles, dest_pitch_tiles,
-                  dest_rt_key.msaa_samples, dest_is_64bpp,
-                  transfer_invocation_rectangles, resolve_clear_rectangle);
+              it_merged->transfer.GetRectangles(dest_rt_key,
+                                                transfer_invocation_rectangles,
+                                                resolve_clear_rectangle);
           assert_not_zero(transfer_invocation_rectangle_count);
           for (uint32_t j = 0; j < transfer_invocation_rectangle_count; ++j) {
             const Transfer::Rectangle& transfer_rectangle =
@@ -3053,8 +3043,11 @@ void D3D12RenderTargetCache::PerformTransfersAndResolveClears(
           EdramTransferAddressConstant address_constant;
           address_constant.dest_pitch = dest_pitch_tiles;
           address_constant.source_pitch = source_rt_key.GetPitchTiles();
-          address_constant.source_to_dest = int32_t(dest_rt_key.base_tiles) -
-                                            int32_t(source_rt_key.base_tiles);
+          address_constant.source_to_dest =
+              (uint32_t(dest_rt_key.base_tiles) -
+               uint32_t(source_rt_key.base_tiles)) &
+              (xenos::kEdramTileCount - 1);
+          address_constant.source_next_period = source_rt_key.next_period;
           if (last_address_constant != address_constant) {
             last_address_constant = address_constant;
             address_constant_set = false;
@@ -3070,8 +3063,9 @@ void D3D12RenderTargetCache::PerformTransfersAndResolveClears(
           host_depth_address_constant.source_pitch =
               host_depth_source_rt_key.GetPitchTiles();
           host_depth_address_constant.source_to_dest =
-              int32_t(dest_rt_key.base_tiles) -
-              int32_t(host_depth_source_rt_key.base_tiles);
+              (uint32_t(dest_rt_key.base_tiles) -
+               uint32_t(host_depth_source_rt_key.base_tiles)) &
+              (xenos::kEdramTileCount - 1);
           if (last_host_depth_address_constant != host_depth_address_constant) {
             last_host_depth_address_constant = host_depth_address_constant;
             host_depth_address_constant_set = false;
@@ -3736,7 +3730,9 @@ bool D3D12RenderTargetCache::DirectResolveRenderTargets(
         rectangle.GetDispatches(dump_pitch, dump_row_length_used, dispatches);
     for (uint32_t i = 0; i < dispatch_count; ++i) {
       const ResolveCopyDumpRectangle::Dispatch& dispatch = dispatches[i];
-      offsets.dispatch_first_tile = dump_base + dispatch.offset;
+      uint32_t dispatch_first_tile = dump_base + dispatch.offset;
+      offsets.dispatch_first_tile =
+          rt_key.GetNonWrappedTileIndex(dispatch_first_tile);
       command_list.D3DSetComputeRoot32BitConstants(
           kDumpRootParameterPushConstants, sizeof(offsets) / sizeof(uint32_t),
           &offsets, kEdramDumpShaderPushConstantOffsets);
@@ -3744,7 +3740,7 @@ bool D3D12RenderTargetCache::DirectResolveRenderTargets(
       // Where this dispatch starts in the resolve's tile grid, which the
       // threads place themselves against.
       uint32_t dispatch_tile_relative =
-          offsets.dispatch_first_tile -
+          dispatch_first_tile -
           copy_shader_constants.dest_relative.edram_info.base_tiles;
       EdramDumpShaderResolveDispatchTile dispatch_tile;
       dispatch_tile.tile_x = dispatch_tile_relative % dump_pitch;
@@ -3926,7 +3922,8 @@ void D3D12RenderTargetCache::DumpRenderTargets(uint32_t dump_base,
         rectangle.GetDispatches(dump_pitch, dump_row_length_used, dispatches);
     for (uint32_t i = 0; i < dispatch_count; ++i) {
       const ResolveCopyDumpRectangle::Dispatch& dispatch = dispatches[i];
-      offsets.dispatch_first_tile = dump_base + dispatch.offset;
+      offsets.dispatch_first_tile =
+          rt_key.GetNonWrappedTileIndex(dump_base + dispatch.offset);
       if (last_offsets != offsets) {
         last_offsets = offsets;
         offsets_set = false;
