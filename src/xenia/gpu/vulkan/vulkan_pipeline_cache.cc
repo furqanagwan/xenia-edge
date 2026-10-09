@@ -356,7 +356,10 @@ bool VulkanPipelineCache::Initialize() {
              VkPipeline pipeline) {
         StoreCreatedPipeline(creation_arguments, pipeline, false);
       },
-      [this]() { return guest_shader_cache_.CreateWorkerTranslator(); });
+      [this]() { return guest_shader_cache_.CreateWorkerTranslator(); },
+      [this](bool busy) {
+        command_processor_.graphics_system()->on_shader_compilation(busy);
+      });
   if (cvars::vulkan_pipeline_creation_threads != 0) {
     size_t creation_thread_count;
     if (cvars::vulkan_pipeline_creation_threads < 0) {
@@ -942,6 +945,7 @@ bool VulkanPipelineCache::TranslateAnalyzedShader(
       }
     }
     if (should_translate) {
+      CreationQueue::BusyScope busy_scope(creation_queue_);
       bool profile = cvars::shader_profiling;
       std::chrono::steady_clock::time_point spirv_gen_start;
       if (profile) {
@@ -2316,6 +2320,7 @@ bool VulkanPipelineCache::EnsurePipelineCreated(
 
   const ui::vulkan::VulkanDevice::Functions& dfn = vulkan_device->functions();
   const VkDevice device = vulkan_device->device();
+  CreationQueue::BusyScope busy_scope(creation_queue_);
   bool profile = cvars::shader_profiling;
   std::chrono::steady_clock::time_point pso_create_start;
   if (profile) {

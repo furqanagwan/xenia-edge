@@ -571,9 +571,10 @@ class VulkanPipelineCache : public GuestSpirvShaderCache::Host {
       SpirvShaderTranslator* worker_translator);
 
   // For asynchronous creation.
-  PipelineCreationQueue<PipelineCreationArguments, VkPipeline,
-                        SpirvShaderTranslator>
-      creation_queue_;
+  using CreationQueue =
+      PipelineCreationQueue<PipelineCreationArguments, VkPipeline,
+                            SpirvShaderTranslator>;
+  CreationQueue creation_queue_;
   // During startup loading, don't block on pipeline creation to allow game
   // boot.
   bool startup_loading_ = false;

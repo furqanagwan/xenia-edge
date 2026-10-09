@@ -278,11 +278,10 @@ class D3D12CommandProcessor final : public CommandProcessor {
     return xenos_sample_positions_used_;
   }
 
-  std::string GetTitleStateSuffix() const override;
-
  protected:
   bool SetupContext() override;
   void ShutdownContext() override;
+  std::string MakeTitleStateSuffix() const override;
   XE_FORCEINLINE
   void WriteRegisterForceinline(uint32_t index, uint32_t value);
   void WriteRegister(uint32_t index, uint32_t value) override;

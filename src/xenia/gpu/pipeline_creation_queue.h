@@ -45,15 +45,37 @@ class PipelineCreationQueue {
   using Store = std::function<void(const TRequest&, THandle)>;
   // The state one creation thread builds and owns for its lifetime.
   using ContextFactory = std::function<std::unique_ptr<TThreadContext>()>;
+  // Told true when the queue or a BusyScope turns busy and false once all are
+  // idle again.
+  // Called under the queue's lock, so the reports arrive in order.
+  using BusyChanged = std::function<void(bool)>;
+
+  // Reports pipeline work done outside the queue, such as a pipeline created on
+  // the draw thread, through BusyChanged while it lasts. IsBusy and
+  // AwaitCompletion ignore it.
+  class BusyScope {
+   public:
+    explicit BusyScope(PipelineCreationQueue& owner) : owner_(owner) {
+      owner_.AddOutsideWork(1);
+    }
+    ~BusyScope() { owner_.AddOutsideWork(-1); }
+    BusyScope(const BusyScope&) = delete;
+    BusyScope& operator=(const BusyScope&) = delete;
+
+   private:
+    PipelineCreationQueue& owner_;
+  };
 
   // Prepares the queue. Call it even with no creation threads - the storage
   // warm-up may start some later.
   void Initialize(const char* thread_name, Creator creator, Store store,
-                  ContextFactory context_factory) {
+                  ContextFactory context_factory, BusyChanged busy_changed) {
     thread_name_ = thread_name;
     creator_ = std::move(creator);
     store_ = std::move(store);
     context_factory_ = std::move(context_factory);
+    busy_changed_ = std::move(busy_changed);
+    busy_reported_ = false;
     threads_busy_ = 0;
     completion_set_event_ = false;
     threads_shutdown_from_ = SIZE_MAX;
@@ -65,6 +87,11 @@ class PipelineCreationQueue {
   // back for publishing, for the backend to destroy - nothing will publish it
   // now.
   std::vector<Publication> Shutdown() {
+    {
+      // Silenced first, so threads finishing don't report into the teardown.
+      std::lock_guard<std::mutex> lock(lock_);
+      busy_changed_ = nullptr;
+    }
     SetThreadCount(0);
     completion_event_.reset();
     {
@@ -171,6 +198,23 @@ class PipelineCreationQueue {
  private:
   bool IsBusyLocked() const { return !queue_.empty() || threads_busy_ != 0; }
 
+  void AddOutsideWork(int delta) {
+    std::lock_guard<std::mutex> lock(lock_);
+    outside_work_ += delta;
+    ReportBusyLocked();
+  }
+
+  void ReportBusyLocked() {
+    bool busy = IsBusyLocked() || outside_work_ != 0;
+    if (busy_reported_ == busy) {
+      return;
+    }
+    busy_reported_ = busy;
+    if (busy_changed_) {
+      busy_changed_(busy);
+    }
+  }
+
   void PushRequest(TRequest request, bool ordered) {
     {
       std::lock_guard<std::mutex> lock(lock_);
@@ -178,6 +222,7 @@ class PipelineCreationQueue {
       // matches the queue order.
       queue_.emplace(ordered ? publish_order_.NextSequence() : 0,
                      std::move(request));
+      ReportBusyLocked();
     }
     cond_.notify_one();
   }
@@ -208,6 +253,7 @@ class PipelineCreationQueue {
                            });
     std::unique_lock<std::mutex> lock(lock_);
     --threads_busy_;
+    ReportBusyLocked();
     SignalCompletionLocked(lock);
     return true;
   }
@@ -259,6 +305,11 @@ class PipelineCreationQueue {
   Creator creator_;
   Store store_;
   ContextFactory context_factory_;
+  // All guarded by lock_.
+  BusyChanged busy_changed_;
+  bool busy_reported_ = false;
+  // Open BusyScopes.
+  int outside_work_ = 0;
 
   std::mutex lock_;
   std::condition_variable cond_;

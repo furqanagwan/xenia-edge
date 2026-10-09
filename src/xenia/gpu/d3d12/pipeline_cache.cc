@@ -217,7 +217,10 @@ bool PipelineCache::Initialize() {
       [this](Pipeline* pipeline, ID3D12PipelineState* state) {
         StoreCreatedPipeline(pipeline, state);
       },
-      [this]() { return guest_shader_cache_.CreateWorkerTranslator(); });
+      [this]() { return guest_shader_cache_.CreateWorkerTranslator(); },
+      [this](bool busy) {
+        command_processor_.graphics_system()->on_shader_compilation(busy);
+      });
   if (cvars::d3d12_pipeline_creation_threads != 0) {
     size_t creation_thread_count;
     if (cvars::d3d12_pipeline_creation_threads < 0) {
@@ -316,6 +319,9 @@ void PipelineCache::InitializeShaderStorage(
             AnalyzeShadersForStorage(translations_needed);
           },
           pipeline_stored_descriptions)) {
+    if (completion_callback) {
+      completion_callback();
+    }
     return;
   }
   shader_storage_file_flush_needed_ = false;
@@ -672,6 +678,7 @@ Shader::Translation* PipelineCache::TranslateGuestMesaSpirv(
       }
     }
     if (should_translate) {
+      CreationQueue::BusyScope busy_scope(creation_queue_);
       uint64_t ucode_hash = translation.shader().ucode_data_hash();
       bool profile = cvars::shader_profiling;
       std::chrono::steady_clock::time_point spirv_gen_start;
@@ -725,6 +732,7 @@ const std::vector<uint8_t>* PipelineCache::ConvertGuestMesaSpirvToDxil(
     }
   }
 
+  CreationQueue::BusyScope busy_scope(creation_queue_);
   // The conversion (and signing) is the expensive step. Run it outside the
   // cache lock. SpirvToDxilCompiler serializes internally. Two threads racing
   // the same shader may both convert it. try_emplace below keeps the first.
@@ -824,6 +832,7 @@ const std::vector<uint8_t>* PipelineCache::GetGuestMesaGeometryDxil(
     }
   }
 
+  CreationQueue::BusyScope busy_scope(creation_queue_);
   // Build the SPIR-V with the same version and float controls as the guest
   // vertex/pixel shaders so the stages link. The shared generator reads the
   // SpirvShaderTranslator vertex output signature and SystemConstants layout.
@@ -991,6 +1000,7 @@ PipelineCache::ConvertGuestMesaTessellationToDxil(
     }
   }
 
+  CreationQueue::BusyScope busy_scope(creation_queue_);
   const uint32_t* vs_spirv;
   size_t vs_words;
   const uint32_t* hs_spirv;
@@ -2463,6 +2473,7 @@ ID3D12PipelineState* PipelineCache::CreateD3D12Pipeline(
   // Create the D3D12 pipeline state object.
   ID3D12Device* device = command_processor_.GetD3D12Provider().GetDevice();
   ID3D12PipelineState* state;
+  CreationQueue::BusyScope busy_scope(creation_queue_);
   bool profile = cvars::shader_profiling;
   std::chrono::steady_clock::time_point pso_create_start;
   if (profile) {
@@ -2523,6 +2534,7 @@ const std::vector<uint8_t>* PipelineCache::GetMesaRovPlaceholderPixelShader(
   key.pixel.set_fsi_msaa_samples(msaa_samples);
   auto it = mesa_rov_placeholder_pixel_shaders_.find(key.value);
   if (it == mesa_rov_placeholder_pixel_shaders_.end()) {
+    CreationQueue::BusyScope busy_scope(creation_queue_);
     std::vector<uint8_t> dxil = TranslateDepthOnlyPixelShader(
         guest_shader_cache_.translator().CreateDepthOnlyFragmentShader(
             msaa_samples, false, input_modification));

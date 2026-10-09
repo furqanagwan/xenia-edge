@@ -34,6 +34,8 @@
 #include "xenia/ui/windowed_app_context.h"
 #include "xenia/xbox.h"
 
+class wxTimer;
+
 namespace xe {
 namespace app {
 
@@ -93,6 +95,7 @@ class EmulatorWindow {
   void SetFullscreen(bool fullscreen);
   void ToggleFullscreen();
   void SetInitializingShaderStorage(bool initializing);
+  void SetCompilingShaders(bool compiling);
 
   void TakeScreenshot();
   void ExportScreenshot(const xe::ui::RawImage& image);
@@ -225,6 +228,8 @@ class EmulatorWindow {
 
   std::string base_title_;
   bool initializing_shader_storage_ = false;
+  bool compiling_shaders_ = false;
+  std::unique_ptr<wxTimer> compiling_shaders_hide_timer_;
 
   ui::ImGuiPostProcessingDialog* postprocessing_dialog_ = nullptr;
   ui::ImGuiPerformanceDialog* performance_dialog_ = nullptr;

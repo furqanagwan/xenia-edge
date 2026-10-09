@@ -565,7 +565,7 @@ MetalCommandProcessor::MetalCommandProcessor(
     : CommandProcessor(graphics_system, kernel_state),
       dxil_binder_(*this, metal_shader_converter_) {}
 
-std::string MetalCommandProcessor::GetTitleStateSuffix() const {
+std::string MetalCommandProcessor::MakeTitleStateSuffix() const {
   if (!render_target_cache_) {
     return {};
   }

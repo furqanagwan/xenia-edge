@@ -427,6 +427,7 @@ void GraphicsSystem::InvalidateGpuMemory() {
 
 void GraphicsSystem::InitializeShaderStorage(
     const std::filesystem::path& cache_root, uint32_t title_id, bool blocking,
+    std::function<void()> started_callback,
     std::function<void()> completion_callback) {
   if (!cvars::store_shaders) {
     if (completion_callback) {
@@ -438,13 +439,20 @@ void GraphicsSystem::InitializeShaderStorage(
     if (command_processor_->is_paused()) {
       // Safe to run on any thread while the command processor is paused, no
       // race condition.
+      if (started_callback) {
+        started_callback();
+      }
       command_processor_->InitializeShaderStorage(
           cache_root, title_id, true, std::move(completion_callback));
     } else {
       xe::threading::Fence fence;
       command_processor_->CallInThread(
           [this, cache_root, title_id, &fence,
+           started_callback = std::move(started_callback),
            completion_callback = std::move(completion_callback)]() mutable {
+            if (started_callback) {
+              started_callback();
+            }
             command_processor_->InitializeShaderStorage(
                 cache_root, title_id, true, std::move(completion_callback));
             fence.Signal();
@@ -454,7 +462,11 @@ void GraphicsSystem::InitializeShaderStorage(
   } else {
     command_processor_->CallInThread(
         [this, cache_root, title_id,
+         started_callback = std::move(started_callback),
          completion_callback = std::move(completion_callback)]() mutable {
+          if (started_callback) {
+            started_callback();
+          }
           command_processor_->InitializeShaderStorage(
               cache_root, title_id, false, std::move(completion_callback));
         });

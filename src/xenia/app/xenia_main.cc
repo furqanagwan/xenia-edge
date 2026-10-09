@@ -720,6 +720,12 @@ void EmulatorApp::EmulatorThread() {
         });
       });
 
+  emulator_->on_shader_compilation.AddListener([this](bool compiling) {
+    app_context().CallInUIThread([this, compiling]() {
+      emulator_window_->SetCompilingShaders(compiling);
+    });
+  });
+
   emulator_->on_patch_apply.AddListener([this]() {
     app_context().CallInUIThread([this]() { emulator_window_->UpdateTitle(); });
   });

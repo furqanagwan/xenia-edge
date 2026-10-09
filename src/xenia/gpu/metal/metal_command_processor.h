@@ -75,8 +75,6 @@ class MetalCommandProcessor : public CommandProcessor {
   void InvalidateGpuMemory() override;
   void ClearReadbackBuffers() override;
 
-  std::string GetTitleStateSuffix() const override;
-
   // Guest memory a resolve or memexport draw wrote from the still-open command
   // buffer. Cleared once a split puts the writes behind a queue boundary.
   void MarkResolvedMemory(uint32_t base_ptr, uint32_t length);
@@ -154,6 +152,7 @@ class MetalCommandProcessor : public CommandProcessor {
  protected:
   bool SetupContext() override;
   void ShutdownContext() override;
+  std::string MakeTitleStateSuffix() const override;
   void InitializeShaderStorage(
       const std::filesystem::path& cache_root, uint32_t title_id, bool blocking,
       std::function<void()> completion_callback = nullptr) override;

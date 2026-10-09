@@ -210,7 +210,7 @@ void VulkanCommandProcessor::PollCompletedSubmission() {
   PumpQueryResolves();
 }
 
-std::string VulkanCommandProcessor::GetTitleStateSuffix() const {
+std::string VulkanCommandProcessor::MakeTitleStateSuffix() const {
   if (!render_target_cache_) {
     return {};
   }

@@ -147,7 +147,10 @@ class CommandProcessor {
   virtual bool Initialize();
   virtual void Shutdown();
 
-  virtual std::string GetTitleStateSuffix() const { return {}; }
+  GraphicsSystem* graphics_system() const { return graphics_system_; }
+
+  // Safe from any thread, even while the context is being torn down.
+  std::string GetTitleStateSuffix() const;
 
   void CallInThread(std::function<void()> fn);
 
@@ -291,6 +294,8 @@ class CommandProcessor {
   void WorkerThreadMain();
   virtual bool SetupContext() = 0;
   virtual void ShutdownContext() = 0;
+  // Built once the context is set up, and kept until it shuts down.
+  virtual std::string MakeTitleStateSuffix() const { return {}; }
   // rarely needed, most register writes have no special logic here
   XE_NOINLINE
   void HandleSpecialRegisterWrite(uint32_t index, uint32_t value);
@@ -740,9 +745,14 @@ class CommandProcessor {
   uint64_t last_swap_time_ = 0;
 
  private:
+  void SetTitleStateSuffix(std::string suffix);
+
   reg::DC_LUT_30_COLOR gamma_ramp_256_entry_table_[256] = {};
   reg::DC_LUT_PWL_DATA gamma_ramp_pwl_rgb_[128][3] = {};
   uint32_t gamma_ramp_rw_component_ = 0;
+
+  mutable std::mutex title_state_suffix_mutex_;
+  std::string title_state_suffix_;
 
   XE_NOINLINE XE_COLD void LogKickoffInitator(uint32_t value);
 };

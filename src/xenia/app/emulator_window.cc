@@ -27,6 +27,8 @@
 #include <sstream>
 #include <thread>
 
+#include <wx/timer.h>
+
 #include "third_party/imgui/imgui.h"
 #include "third_party/stb/stb_image_write.h"
 #include "third_party/tomlplusplus/toml.hpp"
@@ -745,9 +747,17 @@ void EmulatorWindow::OnEmulatorInitialized() {
     app_context_.CallInUIThreadSynchronous([this]() { ClearDialogs(); });
   });
   // The title's threads are gone, so it queues no notifications after this.
+  // Its GPU is stopped too, which drops any shader report still to come.
   emulator_->on_before_shutdown.AddListener([this]() {
-    app_context_.CallInUIThreadSynchronous(
-        [this]() { imgui_drawer_->ClearNotifications(); });
+    app_context_.CallInUIThreadSynchronous([this]() {
+      imgui_drawer_->ClearNotifications();
+      initializing_shader_storage_ = false;
+      compiling_shaders_ = false;
+      if (compiling_shaders_hide_timer_) {
+        compiling_shaders_hide_timer_->Stop();
+      }
+      UpdateTitle();
+    });
   });
 
   window_->SetCursorVisibility(ui::Window::CursorVisibility::kAutoHidden);
@@ -3243,6 +3253,8 @@ void EmulatorWindow::UpdateTitle() {
 
   if (initializing_shader_storage_) {
     sb.Append(" (Preloading shaders\u2026)");
+  } else if (compiling_shaders_) {
+    sb.Append(" (Compiling shaders\u2026)");
   }
 
   patcher::Patcher* patcher = emulator()->patcher();
@@ -3264,6 +3276,30 @@ void EmulatorWindow::SetInitializingShaderStorage(bool initializing) {
   }
   initializing_shader_storage_ = initializing;
   UpdateTitle();
+}
+
+void EmulatorWindow::SetCompilingShaders(bool compiling) {
+  if (!compiling_shaders_hide_timer_) {
+    compiling_shaders_hide_timer_ = std::make_unique<wxTimer>();
+    compiling_shaders_hide_timer_->Bind(wxEVT_TIMER, [this](wxTimerEvent&) {
+      compiling_shaders_ = false;
+      UpdateTitle();
+    });
+  }
+  if (!compiling) {
+    // Held a moment, a game drawing new shaders every frame drains the queue
+    // in between.
+    if (compiling_shaders_) {
+      constexpr int kHoldMs = 500;
+      compiling_shaders_hide_timer_->StartOnce(kHoldMs);
+    }
+    return;
+  }
+  compiling_shaders_hide_timer_->Stop();
+  if (!compiling_shaders_) {
+    compiling_shaders_ = true;
+    UpdateTitle();
+  }
 }
 
 void EmulatorWindow::PollGamepads() {

@@ -630,8 +630,9 @@ class PipelineCache : public GuestSpirvShaderCache::Host {
       Pipeline* pipeline, SpirvShaderTranslator* mesa_spirv_translator);
   // Swaps a created pipeline (or a failure, |state| null) into its entry.
   void StoreCreatedPipeline(Pipeline* pipeline, ID3D12PipelineState* state);
-  PipelineCreationQueue<Pipeline*, ID3D12PipelineState*, SpirvShaderTranslator>
-      creation_queue_;
+  using CreationQueue = PipelineCreationQueue<Pipeline*, ID3D12PipelineState*,
+                                              SpirvShaderTranslator>;
+  CreationQueue creation_queue_;
 
   // Placeholder pipelines replaced by their real counterpart on a creation
   // thread, paired with the submission they may still be referenced by. Real

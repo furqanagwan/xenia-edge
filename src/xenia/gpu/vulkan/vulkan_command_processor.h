@@ -300,8 +300,6 @@ class VulkanCommandProcessor final : public CommandProcessor {
   void SetViewport(const VkViewport& viewport);
   void SetScissor(const VkRect2D& scissor);
 
-  std::string GetTitleStateSuffix() const override;
-
   // Debug marker methods - public so subsystems can annotate their operations.
   void PushDebugMarker(const char* format, ...);
   void PopDebugMarker();
@@ -311,6 +309,7 @@ class VulkanCommandProcessor final : public CommandProcessor {
  protected:
   bool SetupContext() override;
   void ShutdownContext() override;
+  std::string MakeTitleStateSuffix() const override;
   XE_FORCEINLINE
   void WriteRegister(uint32_t index, uint32_t value) override;
   XE_FORCEINLINE

@@ -487,11 +487,22 @@ void CommandProcessor::ThrottlePresentation() {
   }
 }
 
+std::string CommandProcessor::GetTitleStateSuffix() const {
+  std::lock_guard<std::mutex> lock(title_state_suffix_mutex_);
+  return title_state_suffix_;
+}
+
+void CommandProcessor::SetTitleStateSuffix(std::string suffix) {
+  std::lock_guard<std::mutex> lock(title_state_suffix_mutex_);
+  title_state_suffix_ = std::move(suffix);
+}
+
 void CommandProcessor::WorkerThreadMain() {
   if (!SetupContext()) {
     xe::FatalError("Unable to setup command processor internal state");
     return;
   }
+  SetTitleStateSuffix(MakeTitleStateSuffix());
 
   while (worker_running_) {
     while (!pending_fns_.empty()) {
@@ -550,6 +561,7 @@ void CommandProcessor::WorkerThreadMain() {
     // but no games seem to actually use it.
   }
 
+  SetTitleStateSuffix({});
   ShutdownContext();
 }
 

@@ -530,7 +530,7 @@ void D3D12CommandProcessor::SetPrimitiveTopology(
   }
 }
 
-std::string D3D12CommandProcessor::GetTitleStateSuffix() const {
+std::string D3D12CommandProcessor::MakeTitleStateSuffix() const {
   if (!render_target_cache_) {
     return {};
   }

@@ -449,6 +449,8 @@ X_STATUS Emulator::SetupSubsystems() {
       XELOGE("{}: Cannot initalize graphics_system!", __func__);
       return X_STATUS_NOT_IMPLEMENTED;
     }
+    graphics_system_->on_shader_compilation.AddListener(
+        [this](bool compiling) { on_shader_compilation(compiling); });
   }
 
   if (graphics_system_) {
@@ -2491,10 +2493,10 @@ X_STATUS Emulator::PrepareLaunch(const std::filesystem::path& path,
     // XeFu's shaders come from the original Xbox game it runs, its own without
     // one.
     const uint32_t storage_title_id = game_config_title_id();
-    on_shader_storage_initialization(true);
     graphics_system_->InitializeShaderStorage(
         cache_root_, storage_title_id ? storage_title_id : title_id_.value(),
-        false, [this]() { on_shader_storage_initialization(false); });
+        false, [this]() { on_shader_storage_initialization(true); },
+        [this]() { on_shader_storage_initialization(false); });
   }
 
   auto main_thread = kernel_state_->LaunchModule(module);
