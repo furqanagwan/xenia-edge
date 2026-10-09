@@ -317,6 +317,14 @@ class D3D12RenderTargetCache final : public RenderTargetCache {
     uint32_t temporary_sort_index_ = 0;
   };
 
+  // Transitions render targets using their sample positions for depth.
+  // Multisampled depth drawn at Xenos sample positions is decompressed in place
+  // before leaving DEPTH_WRITE. Otherwise, shader reads may use the default
+  // positions to interpret compressed depth.
+  // https://microsoft.github.io/DirectX-Specs/d3d/ProgrammableSamplePositions.html
+  void TransitionRenderTarget(D3D12RenderTarget& render_target,
+                              D3D12_RESOURCE_STATES new_state);
+
   // Root parameters of the ownership transfer pixel shaders, in the register
   // layout Mesa's spirv_to_dxil emits for the emitter's descriptor sets: each
   // set becomes the register space of the same number, the host depth copy's

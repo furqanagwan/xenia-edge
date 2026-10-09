@@ -2655,7 +2655,7 @@ bool VulkanCommandProcessor::PushImageMemoryBarrier(
     VkAccessFlags src_access_mask, VkAccessFlags dst_access_mask,
     VkImageLayout old_layout, VkImageLayout new_layout,
     uint32_t src_queue_family_index, uint32_t dst_queue_family_index,
-    bool skip_if_equal) {
+    bool skip_if_equal, const VkSampleLocationsInfoEXT* sample_locations) {
   if (skip_if_equal && src_stage_mask == dst_stage_mask &&
       src_access_mask == dst_access_mask && old_layout == new_layout &&
       src_queue_family_index == dst_queue_family_index) {
@@ -2687,7 +2687,8 @@ bool VulkanCommandProcessor::PushImageMemoryBarrier(
              subresource_range.baseArrayLayer)) {
       continue;
     }
-    if (other_image_memory_barrier.subresourceRange.aspectMask ==
+    if (other_image_memory_barrier.pNext == sample_locations &&
+        other_image_memory_barrier.subresourceRange.aspectMask ==
             subresource_range.aspectMask &&
         other_image_memory_barrier.subresourceRange.baseMipLevel ==
             subresource_range.baseMipLevel &&
@@ -2719,7 +2720,7 @@ bool VulkanCommandProcessor::PushImageMemoryBarrier(
   VkImageMemoryBarrier& image_memory_barrier =
       pending_barriers_image_memory_barriers_.emplace_back();
   image_memory_barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-  image_memory_barrier.pNext = nullptr;
+  image_memory_barrier.pNext = sample_locations;
   image_memory_barrier.srcAccessMask = src_access_mask;
   image_memory_barrier.dstAccessMask = dst_access_mask;
   image_memory_barrier.oldLayout = old_layout;
@@ -2861,8 +2862,15 @@ void VulkanCommandProcessor::SubmitBarriersAndEnterRenderTargetCacheRenderPass(
     render_pass_begin_info.renderArea.extent = framebuffer->host_extent;
     render_pass_begin_info.clearValueCount = 0;
     render_pass_begin_info.pClearValues = nullptr;
-    deferred_command_buffer_.CmdVkBeginRenderPass(&render_pass_begin_info,
-                                                  VK_SUBPASS_CONTENTS_INLINE);
+    // The sample locations for automatic depth layout transitions and for the
+    // subpass rasterization state when variableSampleLocations is false.
+    deferred_command_buffer_.CmdVkBeginRenderPass(
+        &render_pass_begin_info, VK_SUBPASS_CONTENTS_INLINE,
+        framebuffer->render_pass_key.depth_and_color_used
+            ? render_target_cache_->GetSampleLocationsInfo(
+                  framebuffer->render_pass_key.msaa_samples, true)
+            : nullptr,
+        (framebuffer->render_pass_key.depth_and_color_used & 1) != 0);
   }
   in_render_pass_ = true;
   ++render_passes_total_;
@@ -2965,8 +2973,15 @@ void VulkanCommandProcessor::SubmitBarriersAndEnterRenderTargetCacheRenderPass(
     render_pass_begin_info.renderArea.extent = framebuffer->host_extent;
     render_pass_begin_info.clearValueCount = 0;
     render_pass_begin_info.pClearValues = nullptr;
-    deferred_command_buffer_.CmdVkBeginRenderPass(&render_pass_begin_info,
-                                                  VK_SUBPASS_CONTENTS_INLINE);
+    // The sample locations for automatic depth layout transitions and for the
+    // subpass rasterization state when variableSampleLocations is false.
+    deferred_command_buffer_.CmdVkBeginRenderPass(
+        &render_pass_begin_info, VK_SUBPASS_CONTENTS_INLINE,
+        framebuffer->render_pass_key.depth_and_color_used
+            ? render_target_cache_->GetSampleLocationsInfo(
+                  framebuffer->render_pass_key.msaa_samples, true)
+            : nullptr,
+        (framebuffer->render_pass_key.depth_and_color_used & 1) != 0);
   }
   in_render_pass_ = true;
   ++render_passes_total_;
@@ -3742,13 +3757,14 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
   // Create the pipeline (for this, need the render pass from the render target
   // cache), translating the shaders - doing this now to obtain the used
   // textures.
+  VulkanRenderTargetCache::RenderPassKey render_pass_key =
+      render_target_cache_->last_update_render_pass_key();
   VulkanPipelineCache::Pipeline* pipeline;
   if (!pipeline_cache_->ConfigurePipeline(
           vertex_shader_translation, pixel_shader_translation,
           primitive_processing_result, normalized_depth_control,
-          normalized_color_mask,
-          render_target_cache_->last_update_render_pass_key(), use_interpreter,
-          zpd_hybrid, viz_survey, &pipeline)) {
+          normalized_color_mask, render_pass_key, use_interpreter, zpd_hybrid,
+          viz_survey, &pipeline)) {
     XELOGE("IssueDraw: ConfigurePipeline failed for VS={:016X} PS={:016X}",
            vertex_shader->ucode_data_hash(),
            pixel_shader ? pixel_shader->ucode_data_hash() : 0);
@@ -3927,7 +3943,11 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
       normalized_depth_control,
       host_render_targets_used &&
           render_target_cache_->depth_float24_convert_in_pixel_shader(),
-      host_render_targets_used, pixel_shader && pixel_shader->writes_depth());
+      host_render_targets_used, pixel_shader && pixel_shader->writes_depth(),
+      !host_render_targets_used ||
+          render_target_cache_->GetSampleLocationsInfo(
+              render_pass_key.msaa_samples,
+              render_pass_key.depth_and_color_used) != nullptr);
   gviargs.SetupRegisterValues(regs, window_offset_tiles != 0);
 
   if (gviargs == previous_viewport_info_args_) {

@@ -220,6 +220,10 @@ class PipelineCache : public GuestSpirvShaderCache::Host {
     return reinterpret_cast<const Pipeline*>(handle)
         ->description.root_signature;
   }
+  xenos::MsaaSamples GetHostMsaaSamplesByHandle(void* handle) const {
+    return reinterpret_cast<const Pipeline*>(handle)
+        ->description.description.host_msaa_samples;
+  }
 
  private:
   // Update PipelineDescription::kVersion if any of the Pipeline* enums are
