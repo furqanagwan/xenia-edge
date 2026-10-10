@@ -11,6 +11,7 @@
 #define XENIA_GPU_PIPELINE_CREATION_QUEUE_H_
 
 #include <algorithm>
+#include <atomic>
 #include <condition_variable>
 #include <cstddef>
 #include <cstdint>
@@ -107,6 +108,7 @@ class PipelineCreationQueue {
       queue_.clear();
       taken_.clear();
       completion_callback_ = nullptr;
+      awaiting_completion_.store(false, std::memory_order_release);
       completion_set_event_ = false;
     }
     return held;
@@ -195,6 +197,13 @@ class PipelineCreationQueue {
     }
     completion_callback_ = std::move(callback);
     callback = nullptr;
+    awaiting_completion_.store(true, std::memory_order_release);
+  }
+
+  // Whether TakeCompletionCallback is still waiting for everything queued to
+  // be created.
+  bool IsAwaitingCompletion() const {
+    return awaiting_completion_.load(std::memory_order_acquire);
   }
 
   // Creates whatever is queued on the calling thread, with a context of its
@@ -330,6 +339,7 @@ class PipelineCreationQueue {
       completion_set_event_ = false;
       completion_event_->Set();
     }
+    awaiting_completion_.store(false, std::memory_order_release);
     if (completion_callback_) {
       // Non-blocking mode.
       auto callback = std::move(completion_callback_);
@@ -392,6 +402,8 @@ class PipelineCreationQueue {
   bool completion_set_event_ = false;
   // Invoked instead when the wait is non-blocking. Guarded by lock_.
   std::function<void()> completion_callback_;
+  // Set while a non-blocking wait is pending, written under lock_.
+  std::atomic<bool> awaiting_completion_{false};
   // Threads with this index or above leave as soon as they are idle. Guarded
   // by lock_, notify_all cond_ when set.
   size_t threads_shutdown_from_ = SIZE_MAX;

@@ -311,6 +311,9 @@ void PipelineCache::InitializeShaderStorage(
               return true;  // Already loaded.
             }
             shader->set_ucode_storage_index(storage_index);
+            if (type == xenos::ShaderType::kVertex) {
+              shader->set_drawn();
+            }
             return true;
           },
           // Shader analyze callback. Only the ucode analysis is needed.
@@ -1137,7 +1140,7 @@ bool PipelineCache::ConfigurePipeline(
     bool zpd_total, bool viz_survey,
     uint32_t bound_depth_and_color_render_target_bits,
     const uint32_t* bound_depth_and_color_render_target_formats,
-    bool use_interpreter, void** pipeline_handle_out,
+    bool use_interpreter, bool stand_in_allowed, void** pipeline_handle_out,
     ID3D12RootSignature** root_signature_out) {
 #if XE_GPU_FINE_GRAINED_DRAW_SCOPES
   SCOPE_profile_cpu_f("gpu");
@@ -1156,10 +1159,12 @@ bool PipelineCache::ConfigurePipeline(
 
   // Check if we should use async pipeline creation.
   // When enabled, defer shader translation and pipeline creation to background.
+  // A draw that can't use a stand-in gets its pipeline created here.
   // Only use async when there's a pixel shader - VS-only pipelines are fast
   // to compile and don't benefit from async (vertex shaders are small).
   bool use_async = cvars::async_shader_compilation &&
-                   creation_queue_.has_threads() && pixel_shader != nullptr;
+                   creation_queue_.has_threads() && stand_in_allowed &&
+                   pixel_shader != nullptr;
   // An immediate hot-swap placeholder pipeline needs the real vertex shader and
   // a root signature that does not depend on the (not-yet-translated) pixel
   // shader. Only bindless mode has such a fixed root signature, so the
@@ -1340,7 +1345,8 @@ bool PipelineCache::ConfigurePipeline(
       // a creation thread.
       runtime_description.mesa_pixel_translation = pixel_ps_translation;
     } else {
-      // Sync mode (no creation threads): translate the pixel SPIR-V here.
+      // Sync mode (no creation threads, or no stand-in allowed): translate the
+      // pixel SPIR-V here.
       Shader::Translation* pixel_spirv = TranslateGuestMesaSpirv(
           guest_shader_cache_.translator(), *pixel_ps_translation);
       if (pixel_spirv) {
@@ -1462,7 +1468,8 @@ bool PipelineCache::ConfigurePipeline(
     new_pipeline->creation_pending.store(true, std::memory_order_relaxed);
     creation_queue_.Push(new_pipeline);
   } else {
-    // Sync mode or no creation threads: create synchronously.
+    // Sync mode, no creation threads or no stand-in allowed: create
+    // synchronously.
     new_pipeline->state.store(CreateD3D12Pipeline(runtime_description),
                               std::memory_order_release);
   }

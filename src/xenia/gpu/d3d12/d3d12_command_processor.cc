@@ -2762,15 +2762,10 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
           normalized_color_mask, *vertex_shader, window_offset_tiles)) {
     return false;
   }
-  // An async pipeline stand-in (a placeholder, or skipping the draw) is only
-  // fine for a pass redrawn every frame. Wait for the real pipeline instead for
-  // a render target not drawn recently (maybe a one-off render to a texture), a
-  // small one (generated data) or memexport, whose output isn't redone.
-  bool draw_target_recurring =
-      render_target_cache_->TrackLastUpdateDrawTarget(frame_current_);
-  bool draw_target_small = render_target_cache_->IsLastUpdateDrawTargetSmall();
-  bool stand_in_allowed =
-      draw_target_recurring && !draw_target_small && !memexport_used;
+  const char* stand_in_wait_reason =
+      render_target_cache_->GetPipelineStandInWaitReason(
+          frame_current_, *vertex_shader, memexport_used,
+          pipeline_cache_->IsStorageWarmUpRunning());
 
   // Create the pipeline (for this, need the actually used render target formats
   // from the render target cache), translating the shaders - doing this now to
@@ -2821,7 +2816,7 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
           normalized_color_mask, apply_host_depth_polygon_offset, zpd_hybrid,
           viz_survey, bound_depth_and_color_render_target_bits,
           bound_depth_and_color_render_target_formats, use_interpreter,
-          &pipeline_handle, &root_signature)) {
+          stand_in_wait_reason == nullptr, &pipeline_handle, &root_signature)) {
     return false;
   }
 
@@ -2842,7 +2837,8 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
               normalized_color_mask, apply_host_depth_polygon_offset, false,
               viz_survey, bound_depth_and_color_render_target_bits,
               bound_depth_and_color_render_target_formats, use_interpreter,
-              &pipeline_handle, &root_signature)) {
+              stand_in_wait_reason == nullptr, &pipeline_handle,
+              &root_signature)) {
         return false;
       }
     }
@@ -2870,7 +2866,7 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
           return false;
         }
       }
-    } else if (!stand_in_allowed &&
+    } else if (stand_in_wait_reason &&
                pipeline_cache_->IsPipelineCreationPending(pipeline_handle)) {
       uint64_t await_start = xe::Clock::QueryHostTickCount();
       pipeline_cache_->ExpeditePipeline(pipeline_handle);
@@ -2878,10 +2874,7 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
           "Awaited real pipeline for a draw into {} ({}): VS {:016X}, PS "
           "{:016X}, {:.2f} ms",
           render_target_cache_->GetLastUpdateDrawTargetName(),
-          draw_target_small        ? "small render target"
-          : !draw_target_recurring ? "not drawn recently"
-                                   : "memexport",
-          vertex_shader->ucode_data_hash(),
+          stand_in_wait_reason, vertex_shader->ucode_data_hash(),
           pixel_shader ? pixel_shader->ucode_data_hash() : 0,
           double(xe::Clock::QueryHostTickCount() - await_start) * 1000.0 /
               double(xe::Clock::QueryHostTickFrequency()));

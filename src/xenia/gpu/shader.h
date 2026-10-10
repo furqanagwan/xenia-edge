@@ -1081,6 +1081,11 @@ class Shader {
         expected, new_index, std::memory_order_relaxed);
   }
 
+  // Whether a draw has used this vertex shader, in this session or in one whose
+  // storage was loaded.
+  bool is_drawn() const { return is_drawn_; }
+  void set_drawn() { is_drawn_ = true; }
+
   // Dumps the shader's microcode binary and, if analyzed, disassembly, to files
   // in the given directory based on ucode hash. Returns the name of the written
   // file. Can be called at any time, doesn't require the shader to be
@@ -1150,6 +1155,8 @@ class Shader {
   std::unordered_map<uint64_t, Translation*> translations_;
 
   std::atomic<uint32_t> ucode_storage_index_{UINT32_MAX};
+
+  bool is_drawn_ = false;
 
  private:
   void GatherExecInformation(

@@ -72,6 +72,10 @@ class PipelineCache : public GuestSpirvShaderCache::Host {
 
   void EndSubmission();
   bool IsCreatingPipelines();
+  // Whether the non-blocking storage warm-up is still creating pipelines.
+  bool IsStorageWarmUpRunning() const {
+    return creation_queue_.IsAwaitingCompletion();
+  }
   // Waits for any pipeline creation needed by the current draw path to finish
   // before state is consumed. This was added so strict ZPD query paths stop
   // racing pipeline compilation and then blocking work on incomplete state.
@@ -164,7 +168,7 @@ class PipelineCache : public GuestSpirvShaderCache::Host {
       bool zpd_total, bool viz_survey,
       uint32_t bound_depth_and_color_render_target_bits,
       const uint32_t* bound_depth_and_color_render_targets_formats,
-      bool use_interpreter, void** pipeline_handle_out,
+      bool use_interpreter, bool stand_in_allowed, void** pipeline_handle_out,
       ID3D12RootSignature** root_signature_out);
 
   // Returns a pipeline with deferred creation by its handle. May return nullptr

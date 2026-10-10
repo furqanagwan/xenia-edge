@@ -1339,6 +1339,27 @@ bool RenderTargetCache::TrackLastUpdateDrawTarget(uint64_t frame) {
   return frames.second && frame - frames.second <= kDrawTargetRecurringFrames;
 }
 
+const char* RenderTargetCache::GetPipelineStandInWaitReason(
+    uint64_t frame, Shader& vertex_shader, bool memexport_used,
+    bool storage_warm_up_running) {
+  bool draw_target_recurring = TrackLastUpdateDrawTarget(frame);
+  bool vertex_shader_drawn = vertex_shader.is_drawn();
+  vertex_shader.set_drawn();
+  if (storage_warm_up_running) {
+    return "storage warm-up";
+  }
+  if (IsLastUpdateDrawTargetSmall()) {
+    return "small render target";
+  }
+  if (memexport_used) {
+    return "memexport";
+  }
+  if (!draw_target_recurring && !vertex_shader_drawn) {
+    return "new VS, not drawn recently";
+  }
+  return nullptr;
+}
+
 std::string RenderTargetCache::GetLastUpdateDrawTargetName() const {
   return last_update_draw_target_.IsEmpty()
              ? std::string("no RT")

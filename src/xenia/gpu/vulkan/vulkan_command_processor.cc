@@ -3475,6 +3475,7 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
   const bool memexport_used_pixel = pixel_shader &&
                                     pixel_shader->memexport_eM_written() != 0 &&
                                     device_properties.fragmentStoresAndAtomics;
+  const bool memexport_used = memexport_used_vertex || memexport_used_pixel;
   if (memexport_used_pixel) {
     draw_util::AddMemExportRanges(regs, *pixel_shader, memexport_ranges_);
   }
@@ -3747,15 +3748,10 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
           normalized_color_mask, *vertex_shader, window_offset_tiles)) {
     return false;
   }
-  // An async pipeline stand-in (a placeholder, or skipping the draw) is only
-  // fine for a pass redrawn every frame. Wait for the real pipeline instead for
-  // a render target not drawn recently (maybe a one-off render to a texture), a
-  // small one (generated data) or memexport, whose output isn't redone.
-  bool draw_target_recurring =
-      render_target_cache_->TrackLastUpdateDrawTarget(frame_current_);
-  bool draw_target_small = render_target_cache_->IsLastUpdateDrawTargetSmall();
-  bool stand_in_allowed = draw_target_recurring && !draw_target_small &&
-                          !memexport_used_vertex && !memexport_used_pixel;
+  const char* stand_in_wait_reason =
+      render_target_cache_->GetPipelineStandInWaitReason(
+          frame_current_, *vertex_shader, memexport_used,
+          pipeline_cache_->IsStorageWarmUpRunning());
 
   // Create the pipeline (for this, need the render pass from the render target
   // cache), translating the shaders - doing this now to obtain the used
@@ -3767,7 +3763,7 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
           vertex_shader_translation, pixel_shader_translation,
           primitive_processing_result, normalized_depth_control,
           normalized_color_mask, render_pass_key, use_interpreter, zpd_hybrid,
-          viz_survey, &pipeline)) {
+          viz_survey, stand_in_wait_reason == nullptr, &pipeline)) {
     XELOGE("IssueDraw: ConfigurePipeline failed for VS={:016X} PS={:016X}",
            vertex_shader->ucode_data_hash(),
            pixel_shader ? pixel_shader->ucode_data_hash() : 0);
@@ -3778,7 +3774,7 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
   // pipeline will be swapped in by the creation thread when ready.
   VkPipeline current_pipeline =
       pipeline->pipeline.load(std::memory_order_acquire);
-  if (!stand_in_allowed &&
+  if (stand_in_wait_reason &&
       pipeline->creation_pending.load(std::memory_order_acquire)) {
     uint64_t await_start = xe::Clock::QueryHostTickCount();
     pipeline_cache_->ExpeditePipeline(pipeline);
@@ -3786,10 +3782,7 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
         "Awaited real pipeline for a draw into {} ({}): VS {:016X}, PS "
         "{:016X}, {:.2f} ms",
         render_target_cache_->GetLastUpdateDrawTargetName(),
-        draw_target_small        ? "small render target"
-        : !draw_target_recurring ? "not drawn recently"
-                                 : "memexport",
-        vertex_shader->ucode_data_hash(),
+        stand_in_wait_reason, vertex_shader->ucode_data_hash(),
         pixel_shader ? pixel_shader->ucode_data_hash() : 0,
         double(xe::Clock::QueryHostTickCount() - await_start) * 1000.0 /
             double(xe::Clock::QueryHostTickFrequency()));
@@ -4028,7 +4021,7 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
   if (cvars::memexport_enable &&
       shared_memory_host_and_edram_descriptor_set_ != VK_NULL_HANDLE) {
     route_to_host =
-        memexport_used_vertex || memexport_used_pixel ||
+        memexport_used ||
         (any_memexport_pages_written_ &&
          ((primitive_processing_result.index_buffer_type ==
                PrimitiveProcessor::ProcessedIndexBufferType::kGuestDMA &&

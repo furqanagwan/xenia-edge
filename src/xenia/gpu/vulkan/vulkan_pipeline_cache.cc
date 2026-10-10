@@ -381,11 +381,9 @@ void VulkanPipelineCache::Shutdown() {
   ShutdownShaderStorage();
 
   // Shut down all threads, before destroying the pipelines since they may be
-  // creating them. Also drops the pending completion callback, which may
-  // capture 'this'.
+  // creating them. Also drops the pending completion callback.
   std::vector<std::pair<PipelineCreationArguments, VkPipeline>> parked =
       creation_queue_.Shutdown();
-  startup_loading_ = false;
 
   const ui::vulkan::VulkanDevice* const vulkan_device =
       command_processor_.GetVulkanDevice();
@@ -590,8 +588,10 @@ bool VulkanPipelineCache::EnsureShadersTranslated(
 }
 
 bool VulkanPipelineCache::CanCreatePipelineAsync(bool has_pixel_shader) const {
+  // Nothing draws with a stand-in while the storage warm-up runs.
   return cvars::async_shader_compilation && creation_queue_.has_threads() &&
-         has_pixel_shader && placeholder_pixel_shader_ != VK_NULL_HANDLE;
+         has_pixel_shader && placeholder_pixel_shader_ != VK_NULL_HANDLE &&
+         !IsStorageWarmUpRunning();
 }
 
 const VulkanPipelineCache::PipelineLayoutProvider*
@@ -632,7 +632,7 @@ bool VulkanPipelineCache::ConfigurePipeline(
     uint32_t normalized_color_mask,
     VulkanRenderTargetCache::RenderPassKey render_pass_key,
     bool use_interpreter, bool zpd_total, bool viz_survey,
-    VulkanPipelineCache::Pipeline** pipeline_out) {
+    bool stand_in_allowed, VulkanPipelineCache::Pipeline** pipeline_out) {
 #if XE_GPU_FINE_GRAINED_DRAW_SCOPES
   SCOPE_profile_cpu_f("gpu");
 #endif  // XE_GPU_FINE_GRAINED_DRAW_SCOPES
@@ -743,8 +743,10 @@ bool VulkanPipelineCache::ConfigurePipeline(
   // Pipeline hot-swap: When async mode is enabled, we have creation threads and
   // a pixel shader, create a placeholder pipeline immediately (fast compile)
   // and queue the real pipeline creation in the background. This reduces
-  // stutter from pipeline compilation.
-  bool use_async = CanCreatePipelineAsync(pixel_shader != nullptr);
+  // stutter from pipeline compilation. A draw that can't use a stand-in gets
+  // its pipeline created here.
+  bool use_async =
+      CanCreatePipelineAsync(pixel_shader != nullptr) && stand_in_allowed;
 
   // The interpreter can only stand in via the async placeholder path.
   use_interpreter =
@@ -821,9 +823,11 @@ bool VulkanPipelineCache::ConfigurePipeline(
                                                 std::memory_order_relaxed);
     creation_queue_.Push(creation_arguments);
   } else {
-    // Sync mode (no creation threads / async off / no pixel shader): translate
-    // on this thread and create the pipeline immediately.
-    if (!vertex_shader->is_translated()) {
+    // Sync mode (no creation threads / async off / no pixel shader / storage
+    // warm-up / no stand-in allowed): translate on this thread and create the
+    // pipeline immediately.
+    if (!vertex_shader->is_translated() ||
+        (pixel_shader && !pixel_shader->is_translated())) {
       if (!EnsureShadersTranslated(vertex_shader, pixel_shader)) {
         return false;
       }
@@ -865,7 +869,7 @@ void VulkanPipelineCache::EndSubmission() {
   }
 
   if (creation_queue_.has_threads()) {
-    if (startup_loading_) {
+    if (IsStorageWarmUpRunning()) {
       // Non-blocking: let background threads work asynchronously.
       creation_queue_.Notify();
     } else {
@@ -2493,18 +2497,6 @@ void VulkanPipelineCache::InitializeShaderStorage(
 
   shader_storage_title_id_ = title_id;
 
-  if (!blocking) {
-    startup_loading_ = true;
-    if (completion_callback) {
-      completion_callback = [this, orig = std::move(completion_callback)]() {
-        startup_loading_ = false;
-        orig();
-      };
-    } else {
-      completion_callback = [this]() { startup_loading_ = false; };
-    }
-  }
-
   bool edram_fsi_used = render_target_cache_.GetPath() ==
                         RenderTargetCache::Path::kPixelShaderInterlock;
 
@@ -2534,6 +2526,9 @@ void VulkanPipelineCache::InitializeShaderStorage(
               return true;  // Continue reading.
             }
             shader->set_ucode_storage_index(storage_index);
+            if (type == xenos::ShaderType::kVertex) {
+              shader->set_drawn();
+            }
             if (!shader->is_ucode_analyzed()) {
               shader->AnalyzeUcode(ucode_disasm_buffer_);
             }

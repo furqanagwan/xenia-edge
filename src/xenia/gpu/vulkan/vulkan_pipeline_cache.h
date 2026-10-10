@@ -142,6 +142,10 @@ class VulkanPipelineCache : public GuestSpirvShaderCache::Host {
 
   void EndSubmission();
   bool IsCreatingPipelines();
+  // Whether the non-blocking storage warm-up is still creating pipelines.
+  bool IsStorageWarmUpRunning() const {
+    return creation_queue_.IsAwaitingCompletion();
+  }
   // Waits for any pipeline creation needed by the current draw path to finish
   // before state is consumed. This was added so strict ZPD query paths stop
   // racing pipeline compilation and then blocking work on incomplete state.
@@ -187,7 +191,7 @@ class VulkanPipelineCache : public GuestSpirvShaderCache::Host {
       uint32_t normalized_color_mask,
       VulkanRenderTargetCache::RenderPassKey render_pass_key,
       bool use_interpreter, bool zpd_total, bool viz_survey,
-      Pipeline** pipeline_out);
+      bool stand_in_allowed, Pipeline** pipeline_out);
 
   // True while this draw must be fed the ucode interpreter's inputs (full float
   // constants + ucode location). False once hot-swapped to the real VS.
@@ -196,10 +200,10 @@ class VulkanPipelineCache : public GuestSpirvShaderCache::Host {
            pipeline->is_placeholder.load(std::memory_order_acquire);
   }
 
-  // Whether ConfigurePipeline will create the pipeline asynchronously (so the
-  // draw thread must not translate shaders itself). Matches the use_async
-  // condition inside ConfigurePipeline. has_pixel_shader because the async
-  // placeholder path needs a pixel shader.
+  // Whether ConfigurePipeline can create the pipeline asynchronously (so the
+  // draw thread doesn't translate shaders itself). The use_async condition
+  // inside ConfigurePipeline, which also needs the draw to allow a stand-in.
+  // has_pixel_shader because the async placeholder path needs a pixel shader.
   bool CanCreatePipelineAsync(bool has_pixel_shader) const;
 
  private:
@@ -578,9 +582,6 @@ class VulkanPipelineCache : public GuestSpirvShaderCache::Host {
       PipelineCreationQueue<PipelineCreationArguments, VkPipeline,
                             SpirvShaderTranslator>;
   CreationQueue creation_queue_;
-  // During startup loading, don't block on pipeline creation to allow game
-  // boot.
-  bool startup_loading_ = false;
 
   // Deferred destruction of pipelines.
   // Pipelines are only destroyed after the GPU submission that might reference
