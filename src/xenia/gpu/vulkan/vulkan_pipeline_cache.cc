@@ -662,6 +662,11 @@ bool VulkanPipelineCache::ConfigurePipeline(
   // interpreter placeholder the shaders aren't translated yet, so their binding
   // counts read as 0 and this yields the minimal (no-texture) layout - the
   // creation thread upgrades it to the real layout after translation.
+  // Translation state is read before the layout as a creation thread may
+  // finish a shader in between. A shader taken as translated then has its
+  // bindings in the layout.
+  bool vertex_shader_translated = vertex_shader->is_translated();
+  bool pixel_shader_translated = pixel_shader && pixel_shader->is_translated();
   const PipelineLayoutProvider* pipeline_layout =
       GetGuestGraphicsPipelineLayout(vertex_shader, pixel_shader);
   if (!pipeline_layout) {
@@ -770,7 +775,7 @@ bool VulkanPipelineCache::ConfigurePipeline(
     pipeline_pair.second.uses_interpreter.store(use_interpreter,
                                                 std::memory_order_release);
     bool make_placeholder =
-        pixel_shader && (use_interpreter || vertex_shader->is_translated());
+        pixel_shader && (use_interpreter || vertex_shader_translated);
     if (make_placeholder) {
       // Set is_placeholder BEFORE creating the pipeline to avoid a race with
       // the creation thread checking this flag.
@@ -833,8 +838,8 @@ bool VulkanPipelineCache::ConfigurePipeline(
     // Sync mode (no creation threads / async off / no pixel shader without
     // async_shader_skip_draws / storage warm-up / no stand-in allowed):
     // translate on this thread and create the pipeline immediately.
-    if (!vertex_shader->is_translated() ||
-        (pixel_shader && !pixel_shader->is_translated())) {
+    if (!vertex_shader_translated ||
+        (pixel_shader && !pixel_shader_translated)) {
       if (!EnsureShadersTranslated(vertex_shader, pixel_shader)) {
         return false;
       }
