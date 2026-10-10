@@ -74,6 +74,7 @@ DECLARE_bool(async_shader_compilation);
 DECLARE_bool(async_shader_vs_interpreter);
 DECLARE_bool(async_shader_vs_interpreter_debug_color);
 DECLARE_bool(async_shader_skip_draws);
+DECLARE_string(async_shader_inline_hashes);
 
 DECLARE_bool(shader_profiling);
 

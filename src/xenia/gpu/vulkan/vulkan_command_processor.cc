@@ -3751,7 +3751,7 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
   }
   const char* stand_in_wait_reason =
       render_target_cache_->GetPipelineStandInWaitReason(
-          frame_current_, *vertex_shader, memexport_used_vertex,
+          frame_current_, *vertex_shader, pixel_shader, memexport_used_vertex,
           memexport_used_pixel, pipeline_cache_->IsStorageWarmUpRunning());
 
   // Create the pipeline (for this, need the render pass from the render target
@@ -3760,6 +3760,11 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
   VulkanRenderTargetCache::RenderPassKey render_pass_key =
       render_target_cache_->last_update_render_pass_key();
   VulkanPipelineCache::Pipeline* pipeline;
+  uint64_t inline_build_start = cvars::async_shader_compilation &&
+                                        stand_in_wait_reason &&
+                                        cvars::shader_profiling
+                                    ? xe::Clock::QueryHostTickCount()
+                                    : 0;
   if (!pipeline_cache_->ConfigurePipeline(
           vertex_shader_translation, pixel_shader_translation,
           primitive_processing_result, normalized_depth_control,
@@ -3769,6 +3774,21 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
            vertex_shader->ucode_data_hash(),
            pixel_shader ? pixel_shader->ucode_data_hash() : 0);
     return false;
+  }
+  if (inline_build_start) {
+    double inline_build_ms =
+        double(xe::Clock::QueryHostTickCount() - inline_build_start) * 1000.0 /
+        double(xe::Clock::QueryHostTickFrequency());
+    // A lookup takes microseconds. Anything slower translated shaders or built
+    // the pipeline.
+    if (inline_build_ms >= 1.0) {
+      XELOGI(
+          "shader_profiling: pipeline work inline for a draw into {} ({}): "
+          "VS {:016X}, PS {:016X}, {:.2f} ms",
+          render_target_cache_->GetLastUpdateDrawTargetName(),
+          stand_in_wait_reason, vertex_shader->ucode_data_hash(),
+          pixel_shader ? pixel_shader->ucode_data_hash() : 0, inline_build_ms);
+    }
   }
 
   // If async mode is active, this may be a placeholder pipeline. The real

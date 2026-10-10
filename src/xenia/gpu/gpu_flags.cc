@@ -218,6 +218,12 @@ DEFINE_bool(
     "the background. Avoids stutter but what they draw appears a few frames "
     "late.",
     "GPU");
+DEFINE_string(
+    async_shader_inline_hashes, "",
+    "Comma-separated vertex or pixel shader ucode hashes (hex, as logged) "
+    "whose draws always wait for their real pipeline instead of using an "
+    "async stand-in. For bisecting which stand-in causes a rendering issue.",
+    "GPU.Debug");
 
 DEFINE_bool(
     shader_profiling, false,

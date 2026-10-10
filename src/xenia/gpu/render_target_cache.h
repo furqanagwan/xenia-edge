@@ -245,9 +245,11 @@ class RenderTargetCache {
   // one-off render to a texture), a small render target (generated data) or
   // pixel shader memexport, whose output isn't redone. A new vertex shader with
   // memexport waits too, as its output may be written only once. Nothing uses a
-  // stand-in while the storage warm-up runs. Call once per draw, after Update.
+  // stand-in while the storage warm-up runs or for shaders in
+  // async_shader_inline_hashes. Call once per draw, after Update.
   const char* GetPipelineStandInWaitReason(uint64_t frame,
                                            Shader& vertex_shader,
+                                           const Shader* pixel_shader,
                                            bool vertex_memexport_used,
                                            bool pixel_memexport_used,
                                            bool storage_warm_up_running);

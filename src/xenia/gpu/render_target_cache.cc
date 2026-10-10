@@ -11,6 +11,7 @@
 
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 
 #include "xenia/base/assert.h"
@@ -19,6 +20,7 @@
 #include "xenia/base/logging.h"
 #include "xenia/base/math.h"
 #include "xenia/gpu/draw_util.h"
+#include "xenia/gpu/gpu_flags.h"
 #include "xenia/gpu/register_file.h"
 #include "xenia/gpu/registers.h"
 #include "xenia/gpu/trace_writer.h"
@@ -1339,12 +1341,35 @@ bool RenderTargetCache::TrackLastUpdateDrawTarget(uint64_t frame) {
   return frames.second && frame - frames.second <= kDrawTargetRecurringFrames;
 }
 
+static bool IsAsyncShaderInlineHash(uint64_t hash) {
+  const char* list = cvars::async_shader_inline_hashes.c_str();
+  while (*list) {
+    char* end;
+    uint64_t list_hash = std::strtoull(list, &end, 16);
+    if (end == list) {
+      ++list;
+      continue;
+    }
+    if (list_hash == hash) {
+      return true;
+    }
+    list = end;
+  }
+  return false;
+}
+
 const char* RenderTargetCache::GetPipelineStandInWaitReason(
-    uint64_t frame, Shader& vertex_shader, bool vertex_memexport_used,
-    bool pixel_memexport_used, bool storage_warm_up_running) {
+    uint64_t frame, Shader& vertex_shader, const Shader* pixel_shader,
+    bool vertex_memexport_used, bool pixel_memexport_used,
+    bool storage_warm_up_running) {
   bool draw_target_recurring = TrackLastUpdateDrawTarget(frame);
   bool vertex_shader_drawn = vertex_shader.is_drawn();
   vertex_shader.set_drawn();
+  if (IsAsyncShaderInlineHash(vertex_shader.ucode_data_hash()) ||
+      (pixel_shader &&
+       IsAsyncShaderInlineHash(pixel_shader->ucode_data_hash()))) {
+    return "async_shader_inline_hashes";
+  }
   if (storage_warm_up_running) {
     return "storage warm-up";
   }
