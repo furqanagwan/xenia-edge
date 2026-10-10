@@ -609,6 +609,7 @@ bool D3D12CommandProcessor::SetupContext() {
   command_list_->Close();
   command_list_->QueryInterface(IID_PPV_ARGS(&command_list_1_));
   command_list_->QueryInterface(IID_PPV_ARGS(&command_list_2_));
+  command_list_->QueryInterface(IID_PPV_ARGS(&command_list_9_));
 
   bindless_resources_used_ =
       cvars::d3d12_bindless &&
@@ -683,6 +684,11 @@ bool D3D12CommandProcessor::SetupContext() {
                           command_list_2_ &&
                           render_target_cache_->GetPath() ==
                               RenderTargetCache::Path::kHostRenderTargets;
+  // The pixel shader interlock path applies the depth bias in the shader.
+  depth_bias_dynamic_ = provider.IsDynamicDepthBiasSupported() &&
+                        command_list_9_ &&
+                        render_target_cache_->GetPath() ==
+                            RenderTargetCache::Path::kHostRenderTargets;
 
   // Initialize resource binding.
   constant_buffer_pool_ = std::make_unique<ui::d3d12::D3D12UploadBufferPool>(
@@ -886,7 +892,7 @@ bool D3D12CommandProcessor::SetupContext() {
 
   pipeline_cache_ = std::make_unique<PipelineCache>(
       *this, *register_file_, *render_target_cache_.get(),
-      bindless_resources_used_, zpd_hybrid_supported_);
+      bindless_resources_used_, zpd_hybrid_supported_, depth_bias_dynamic_);
   if (!pipeline_cache_->Initialize()) {
     XELOGE("Failed to initialize the graphics pipeline cache");
     return false;
@@ -1514,6 +1520,7 @@ void D3D12CommandProcessor::ShutdownContext() {
   deferred_command_list_.Reset();
   ui::d3d12::util::ReleaseAndNull(command_list_1_);
   ui::d3d12::util::ReleaseAndNull(command_list_2_);
+  ui::d3d12::util::ReleaseAndNull(command_list_9_);
   ui::d3d12::util::ReleaseAndNull(command_list_);
   ClearCommandAllocatorCache();
 
@@ -2954,17 +2961,20 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
   ID3D12PipelineState* draw_pipeline_state =
       pipeline_cache_->GetD3D12PipelineForDraw(
           pipeline_handle, &placeholder_pipeline, &interpreter_placeholder);
+  // Binding a pipeline loads its own depth bias, dynamic or not.
   if (placeholder_pipeline) {
     if (current_external_pipeline_ != draw_pipeline_state) {
       deferred_command_list_.D3DSetPipelineState(draw_pipeline_state);
       current_external_pipeline_ = draw_pipeline_state;
       current_guest_pipeline_ = nullptr;
+      ff_depth_bias_update_needed_ = true;
     }
   } else if (current_guest_pipeline_ != pipeline_handle) {
     deferred_command_list_.SetPipelineStateHandle(
         reinterpret_cast<void*>(pipeline_handle));
     current_guest_pipeline_ = pipeline_handle;
     current_external_pipeline_ = nullptr;
+    ff_depth_bias_update_needed_ = true;
   }
 
   // Get dynamic rasterizer state. Using the resolution scale of this draw,
@@ -3016,10 +3026,11 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
   scissor.extent[0] *= draw_resolution_scale_x;
   scissor.extent[1] *= draw_resolution_scale_y;
 #endif
-  // Update viewport, scissor, blend factor and stencil reference.
+  // Update viewport, scissor, blend factor, stencil reference and depth bias.
   UpdateFixedFunctionState(viewport_info, scissor, primitive_polygonal,
                            normalized_depth_control, normalized_color_mask,
-                           bound_depth_and_color_render_target_bits);
+                           bound_depth_and_color_render_target_bits,
+                           apply_host_depth_polygon_offset);
 
   // Pipelines with one sample draw with the default pattern, including host RT
   // ones with nothing bound.
@@ -3905,6 +3916,7 @@ bool D3D12CommandProcessor::BeginSubmission(bool is_guest_command) {
     ff_scissor_update_needed_ = true;
     ff_blend_factor_update_needed_ = true;
     ff_stencil_ref_update_needed_ = true;
+    ff_depth_bias_update_needed_ = true;
     current_guest_pipeline_ = nullptr;
     current_external_pipeline_ = nullptr;
     current_graphics_root_signature_ = nullptr;
@@ -4057,7 +4069,7 @@ bool D3D12CommandProcessor::EndSubmission(bool is_swap) {
     command_allocator->Reset();
     command_list_->Reset(command_allocator, nullptr);
     deferred_command_list_.Execute(command_list_, command_list_1_,
-                                   command_list_2_);
+                                   command_list_2_, command_list_9_);
     command_list_->Close();
     ID3D12CommandList* execute_command_lists[] = {command_list_};
     direct_queue->ExecuteCommandLists(1, execute_command_lists);
@@ -4216,7 +4228,8 @@ void D3D12CommandProcessor::UpdateFixedFunctionState(
     const draw_util::Scissor& scissor, bool primitive_polygonal,
     reg::RB_DEPTHCONTROL normalized_depth_control,
     uint32_t normalized_color_mask,
-    uint32_t bound_depth_and_color_render_target_bits) {
+    uint32_t bound_depth_and_color_render_target_bits,
+    bool depth_bias_in_pixel_shader) {
 #if XE_GPU_FINE_GRAINED_DRAW_SCOPES
   SCOPE_profile_cpu_f("gpu");
 #endif  // XE_GPU_FINE_GRAINED_DRAW_SCOPES
@@ -4322,6 +4335,26 @@ void D3D12CommandProcessor::UpdateFixedFunctionState(
       ff_stencil_ref_ = stencil_ref;
       deferred_command_list_.D3DOMSetStencilRef(ff_stencil_ref_);
       ff_stencil_ref_update_needed_ = false;
+    }
+
+    // Depth bias.
+    if (depth_bias_dynamic_) {
+      float depth_bias = 0.0f;
+      float depth_bias_slope_scaled = 0.0f;
+      if (!depth_bias_in_pixel_shader) {
+        pipeline_cache_->GetHostDepthBias(primitive_polygonal, depth_bias,
+                                          depth_bias_slope_scaled);
+      }
+      ff_depth_bias_update_needed_ |=
+          ff_depth_bias_ != depth_bias ||
+          ff_depth_bias_slope_scaled_ != depth_bias_slope_scaled;
+      if (ff_depth_bias_update_needed_) {
+        ff_depth_bias_ = depth_bias;
+        ff_depth_bias_slope_scaled_ = depth_bias_slope_scaled;
+        deferred_command_list_.D3DRSSetDepthBias(depth_bias, 0.0f,
+                                                 depth_bias_slope_scaled);
+        ff_depth_bias_update_needed_ = false;
+      }
     }
   }
 }

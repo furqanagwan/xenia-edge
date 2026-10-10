@@ -41,7 +41,8 @@ class DeferredCommandList {
   void Reset();
   void Execute(ID3D12GraphicsCommandList* command_list,
                ID3D12GraphicsCommandList1* command_list_1,
-               ID3D12GraphicsCommandList2* command_list_2);
+               ID3D12GraphicsCommandList2* command_list_2,
+               ID3D12GraphicsCommandList9* command_list_9);
 
   D3D12_RECT* ClearDepthStencilViewAllocatedRects(
       D3D12_CPU_DESCRIPTOR_HANDLE depth_stencil_view,
@@ -345,6 +346,15 @@ class DeferredCommandList {
                 num_barriers * sizeof(D3D12_RESOURCE_BARRIER));
   }
 
+  void D3DRSSetDepthBias(FLOAT depth_bias, FLOAT depth_bias_clamp,
+                         FLOAT slope_scaled_depth_bias) {
+    auto& args = *reinterpret_cast<D3DRSSetDepthBiasArguments*>(WriteCommand(
+        Command::kD3DRSSetDepthBias, sizeof(D3DRSSetDepthBiasArguments)));
+    args.depth_bias = depth_bias;
+    args.depth_bias_clamp = depth_bias_clamp;
+    args.slope_scaled_depth_bias = slope_scaled_depth_bias;
+  }
+
   void RSSetScissorRect(const D3D12_RECT& rect) {
     auto& arg = *reinterpret_cast<D3D12_RECT*>(
         WriteCommand(Command::kRSSetScissorRect, sizeof(D3D12_RECT)));
@@ -563,6 +573,7 @@ class DeferredCommandList {
     kD3DOMSetStencilRef,
     kD3DResolveSubresourceRegion,
     kD3DResourceBarrier,
+    kD3DRSSetDepthBias,
     kRSSetScissorRect,
     kRSSetViewport,
     kD3DSetComputeRoot32BitConstants,
@@ -735,6 +746,12 @@ class DeferredCommandList {
     bool has_src_rect;
     DXGI_FORMAT format;
     D3D12_RESOLVE_MODE resolve_mode;
+  };
+
+  struct D3DRSSetDepthBiasArguments {
+    FLOAT depth_bias;
+    FLOAT depth_bias_clamp;
+    FLOAT slope_scaled_depth_bias;
   };
 
   struct D3DSetSamplePositionsArguments {

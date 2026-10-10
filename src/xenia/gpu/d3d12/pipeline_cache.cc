@@ -116,12 +116,13 @@ PipelineCache::PipelineCache(D3D12CommandProcessor& command_processor,
                              const RegisterFile& register_file,
                              const D3D12RenderTargetCache& render_target_cache,
                              bool bindless_resources_used,
-                             bool zpd_hybrid_supported)
+                             bool zpd_hybrid_supported, bool depth_bias_dynamic)
     : command_processor_(command_processor),
       register_file_(register_file),
       render_target_cache_(render_target_cache),
       bindless_resources_used_(bindless_resources_used),
       zpd_hybrid_supported_(zpd_hybrid_supported),
+      depth_bias_dynamic_(depth_bias_dynamic),
       guest_shader_cache_(*this, register_file, render_target_cache) {}
 
 PipelineCache::~PipelineCache() { Shutdown(); }
@@ -355,13 +356,25 @@ void PipelineCache::InitializeShaderStorage(
     size_t pipelines_root_sig_failed = 0;
     for (const PipelineStoredDescription& pipeline_stored_description :
          pipeline_stored_descriptions) {
-      const PipelineDescription& pipeline_description =
+      PipelineDescription pipeline_description =
           pipeline_stored_description.description;
+      uint64_t pipeline_description_hash =
+          pipeline_stored_description.description_hash;
+      // Stored by a device without dynamic depth bias.
+      if (depth_bias_dynamic_ &&
+          (pipeline_description.depth_bias ||
+           pipeline_description.depth_bias_slope_scaled ||
+           pipeline_description.resolution_scale_native)) {
+        pipeline_description.depth_bias = 0;
+        pipeline_description.depth_bias_slope_scaled = 0.0f;
+        pipeline_description.resolution_scale_native = 0;
+        pipeline_description_hash =
+            XXH3_64bits(&pipeline_description, sizeof(pipeline_description));
+      }
       // TODO(Triang3l): On Vulkan, skip pipelines requiring unsupported device
       // features (to keep the cache files mostly shareable across devices).
       // Skip already known pipelines - those have already been enqueued.
-      auto found_range =
-          pipelines_.equal_range(pipeline_stored_description.description_hash);
+      auto found_range = pipelines_.equal_range(pipeline_description_hash);
       bool pipeline_found = false;
       for (auto it = found_range.first; it != found_range.second; ++it) {
         Pipeline* found_pipeline = it->second;
@@ -435,8 +448,7 @@ void PipelineCache::InitializeShaderStorage(
       new_pipeline->from_storage = true;
       std::memcpy(&new_pipeline->description, &mesa_runtime_description,
                   sizeof(mesa_runtime_description));
-      pipelines_.emplace(pipeline_stored_description.description_hash,
-                         new_pipeline);
+      pipelines_.emplace(pipeline_description_hash, new_pipeline);
       COUNT_profile_set("gpu/pipeline_cache/pipelines", pipelines_.size());
       if (creation_queue_.has_threads()) {
         // Creation thread builds the Mesa DXIL off the main thread (the
@@ -1547,6 +1559,43 @@ void PipelineCache::AnalyzeShadersForStorage(
              xe::Clock::QueryHostTickFrequency());
 }
 
+void PipelineCache::GetHostDepthBias(bool primitive_polygonal,
+                                     float& depth_bias_out,
+                                     float& depth_bias_slope_scaled_out) const {
+  int32_t depth_bias;
+  float depth_bias_slope_scaled;
+  GetGuestDepthBias(primitive_polygonal, depth_bias, depth_bias_slope_scaled);
+  depth_bias_out = float(depth_bias);
+  depth_bias_slope_scaled_out =
+      depth_bias_slope_scaled *
+      GetDepthBiasSlopeScale(render_target_cache_.IsDrawScaleNative());
+}
+
+void PipelineCache::GetGuestDepthBias(
+    bool primitive_polygonal, int32_t& depth_bias_out,
+    float& depth_bias_slope_scaled_out) const {
+  const auto& regs = register_file_;
+  float polygon_offset, polygon_offset_scale;
+  draw_util::GetPreferredFacePolygonOffset(
+      regs, primitive_polygonal, polygon_offset_scale, polygon_offset);
+  depth_bias_out = draw_util::GetD3D10IntegerPolygonOffset(
+      regs.Get<reg::RB_DEPTH_INFO>().depth_format, polygon_offset);
+  depth_bias_slope_scaled_out =
+      polygon_offset_scale * xenos::kPolygonOffsetScaleSubpixelUnit;
+}
+
+float PipelineCache::GetDepthBiasSlopeScale(
+    bool resolution_scale_native) const {
+  // With non-square resolution scaling, make sure the worst-case impact is
+  // reverted (slope only along the scaled axis), thus max. More bias is better
+  // than less bias, because less bias means Z fighting with the background is
+  // more likely. Native draws get the guest bias as is.
+  return resolution_scale_native
+             ? 1.0f
+             : float(std::max(render_target_cache_.draw_resolution_scale_x(),
+                              render_target_cache_.draw_resolution_scale_y()));
+}
+
 bool PipelineCache::GetCurrentStateDescription(
     Shader::Translation* vertex_shader, Shader::Translation* pixel_shader,
     const PrimitiveProcessor::ProcessingResult& primitive_processing_result,
@@ -1732,14 +1781,12 @@ bool PipelineCache::GetCurrentStateDescription(
     cull_front = false;
     cull_back = false;
   }
-  if (!edram_rov_used && !depth_bias_in_pixel_shader) {
-    float polygon_offset, polygon_offset_scale;
-    draw_util::GetPreferredFacePolygonOffset(
-        regs, primitive_polygonal, polygon_offset_scale, polygon_offset);
-    description_out.depth_bias = draw_util::GetD3D10IntegerPolygonOffset(
-        regs.Get<reg::RB_DEPTH_INFO>().depth_format, polygon_offset);
-    description_out.depth_bias_slope_scaled =
-        polygon_offset_scale * xenos::kPolygonOffsetScaleSubpixelUnit;
+  if (!edram_rov_used && !depth_bias_in_pixel_shader && !depth_bias_dynamic_) {
+    int32_t depth_bias;
+    float depth_bias_slope_scaled;
+    GetGuestDepthBias(primitive_polygonal, depth_bias, depth_bias_slope_scaled);
+    description_out.depth_bias = depth_bias;
+    description_out.depth_bias_slope_scaled = depth_bias_slope_scaled;
     // The slope-scaled depth bias multiplier depends on this at pipeline
     // creation.
     description_out.resolution_scale_native =
@@ -2274,16 +2321,12 @@ ID3D12PipelineState* PipelineCache::CreateD3D12Pipeline(
       description.front_counter_clockwise ? true : false;
   state_desc.RasterizerState.DepthBias = description.depth_bias;
   state_desc.RasterizerState.DepthBiasClamp = 0.0f;
-  // With non-square resolution scaling, make sure the worst-case impact is
-  // reverted (slope only along the scaled axis), thus max. More bias is better
-  // than less bias, because less bias means Z fighting with the background is
-  // more likely. Native draws get the guest bias as is.
   state_desc.RasterizerState.SlopeScaledDepthBias =
       description.depth_bias_slope_scaled *
-      (description.resolution_scale_native
-           ? 1.0f
-           : float(std::max(render_target_cache_.draw_resolution_scale_x(),
-                            render_target_cache_.draw_resolution_scale_y())));
+      GetDepthBiasSlopeScale(description.resolution_scale_native);
+  if (depth_bias_dynamic_) {
+    state_desc.Flags |= D3D12_PIPELINE_STATE_FLAG_DYNAMIC_DEPTH_BIAS;
+  }
   state_desc.RasterizerState.DepthClipEnable =
       description.depth_clip ? true : false;
   uint32_t msaa_sample_count = uint32_t(1)

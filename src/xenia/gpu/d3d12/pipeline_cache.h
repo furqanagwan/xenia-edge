@@ -55,7 +55,8 @@ class PipelineCache : public GuestSpirvShaderCache::Host {
   PipelineCache(D3D12CommandProcessor& command_processor,
                 const RegisterFile& register_file,
                 const D3D12RenderTargetCache& render_target_cache,
-                bool bindless_resources_used, bool zpd_hybrid_supported);
+                bool bindless_resources_used, bool zpd_hybrid_supported,
+                bool depth_bias_dynamic);
   ~PipelineCache();
 
   bool Initialize();
@@ -211,6 +212,10 @@ class PipelineCache : public GuestSpirvShaderCache::Host {
     return state;
   }
   ID3D12PipelineState* AwaitD3D12PipelineByHandle(void* handle);
+  // The host depth bias of the current draw for dynamic depth bias, the slope
+  // scaled for the draw's resolution scale.
+  void GetHostDepthBias(bool primitive_polygonal, float& depth_bias_out,
+                        float& depth_bias_slope_scaled_out) const;
   // Stores a pipeline still being created without waiting for anything else
   // queued, for a draw that can't use a stand-in.
   void ExpeditePipeline(void* handle);
@@ -463,6 +468,10 @@ class PipelineCache : public GuestSpirvShaderCache::Host {
       uint32_t bound_depth_and_color_render_target_bits,
       const uint32_t* bound_depth_and_color_render_target_formats,
       PipelineRuntimeDescription& runtime_description_out);
+  // The guest depth bias, the slope in guest pixels.
+  void GetGuestDepthBias(bool primitive_polygonal, int32_t& depth_bias_out,
+                         float& depth_bias_slope_scaled_out) const;
+  float GetDepthBiasSlopeScale(bool resolution_scale_native) const;
 
   // Modifications are raw SpirvShaderTranslator::Modification values (uint64_t
   // to keep spirv_shader_translator.h, and glslang, out of this header).
@@ -501,6 +510,8 @@ class PipelineCache : public GuestSpirvShaderCache::Host {
   const D3D12RenderTargetCache& render_target_cache_;
   bool bindless_resources_used_;
   bool zpd_hybrid_supported_;
+  // Depth bias is set on the command list instead of baked into pipelines.
+  bool depth_bias_dynamic_;
 
   // Temporary storage for AnalyzeUcode calls on the processor thread.
   StringBuffer ucode_disasm_buffer_;

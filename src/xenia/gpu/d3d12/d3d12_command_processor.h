@@ -538,7 +538,8 @@ class D3D12CommandProcessor final : public CommandProcessor {
       const draw_util::Scissor& scissor, bool primitive_polygonal,
       reg::RB_DEPTHCONTROL normalized_depth_control,
       uint32_t normalized_color_mask,
-      uint32_t bound_depth_and_color_render_target_bits);
+      uint32_t bound_depth_and_color_render_target_bits,
+      bool depth_bias_in_pixel_shader);
 
   // Parallel binding for the spirv_to_dxil guest path (Mesa root signature).
   // Fills a SpirvShaderTranslator::SystemConstants (mirroring the Vulkan
@@ -635,6 +636,8 @@ class D3D12CommandProcessor final : public CommandProcessor {
   bool active_query_is_rov_ = false;
   bool zpd_rov_path_ = false;
   bool zpd_hybrid_supported_ = false;
+  // Depth bias is set on the command list instead of baked into pipelines.
+  bool depth_bias_dynamic_ = false;
   std::deque<PendingQueryResolve> query_resolves_in_flight_;
 
   std::unique_ptr<ui::d3d12::D3D12GPUCompletionTimeline> completion_timeline_;
@@ -668,6 +671,7 @@ class D3D12CommandProcessor final : public CommandProcessor {
   ID3D12GraphicsCommandList* command_list_ = nullptr;
   ID3D12GraphicsCommandList1* command_list_1_ = nullptr;
   ID3D12GraphicsCommandList2* command_list_2_ = nullptr;
+  ID3D12GraphicsCommandList9* command_list_9_ = nullptr;
   DeferredCommandList deferred_command_list_;
 
   // Should bindless textures and samplers be used - many times faster
@@ -884,10 +888,13 @@ class D3D12CommandProcessor final : public CommandProcessor {
   D3D12_RECT ff_scissor_;
   float ff_blend_factor_[4];
   uint32_t ff_stencil_ref_;
+  float ff_depth_bias_;
+  float ff_depth_bias_slope_scaled_;
   bool ff_viewport_update_needed_;
   bool ff_scissor_update_needed_;
   bool ff_blend_factor_update_needed_;
   bool ff_stencil_ref_update_needed_;
+  bool ff_depth_bias_update_needed_;
 
   // Currently bound pipeline, either a graphics pipeline from the pipeline
   // cache (with potentially deferred creation - current_external_pipeline_ is
