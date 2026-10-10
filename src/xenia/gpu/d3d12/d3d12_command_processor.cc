@@ -2873,7 +2873,7 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
     } else if (!stand_in_allowed &&
                pipeline_cache_->IsPipelineCreationPending(pipeline_handle)) {
       uint64_t await_start = xe::Clock::QueryHostTickCount();
-      pipeline_cache_->AwaitRealD3D12PipelineByHandle(pipeline_handle);
+      pipeline_cache_->ExpeditePipeline(pipeline_handle);
       XELOGI(
           "Awaited real pipeline for a draw into {} ({}): VS {:016X}, PS "
           "{:016X}, {:.2f} ms",

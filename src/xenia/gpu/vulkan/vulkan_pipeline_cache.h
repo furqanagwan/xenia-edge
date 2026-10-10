@@ -146,6 +146,9 @@ class VulkanPipelineCache : public GuestSpirvShaderCache::Host {
   // before state is consumed. This was added so strict ZPD query paths stop
   // racing pipeline compilation and then blocking work on incomplete state.
   void AwaitPipelineCompletion();
+  // Stores a pipeline still being created without waiting for anything else
+  // queued, for a draw that can't use a stand-in.
+  void ExpeditePipeline(Pipeline* pipeline);
 
   VulkanShader* LoadShader(xenos::ShaderType shader_type,
                            const uint32_t* host_address, uint32_t dword_count);
@@ -564,8 +567,8 @@ class VulkanPipelineCache : public GuestSpirvShaderCache::Host {
   // Previously used pipeline, to avoid lookups if the state wasn't changed.
   std::pair<const PipelineDescription, Pipeline>* last_pipeline_ = nullptr;
 
-  // Builds one queued pipeline on a creation thread. VK_NULL_HANDLE if it
-  // failed.
+  // Builds one queued pipeline on a creation thread or the thread expediting
+  // it. VK_NULL_HANDLE if it failed.
   VkPipeline CreateQueuedPipeline(
       const PipelineCreationArguments& creation_arguments,
       SpirvShaderTranslator* worker_translator);

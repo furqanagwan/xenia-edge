@@ -751,8 +751,8 @@ bool VulkanPipelineCache::ConfigurePipeline(
       use_interpreter && use_async && ucode_interpreter_vs_ != VK_NULL_HANDLE;
 
   if (use_async) {
-    // The draw thread never translates for async pipelines (so it never stalls
-    // on background translation). Create an immediate placeholder when we can -
+    // The draw thread only translates for an async pipeline it expedites.
+    // Create an immediate placeholder when we can -
     // the interpreter VS, or the real VS if it's already translated - and queue
     // the real pipeline (translate + create) on a background thread. A
     // non-interpretable draw whose shaders aren't translated yet gets NO
@@ -884,6 +884,14 @@ bool VulkanPipelineCache::IsCreatingPipelines() {
 
 void VulkanPipelineCache::AwaitPipelineCompletion() {
   creation_queue_.AwaitCompletion();
+}
+
+void VulkanPipelineCache::ExpeditePipeline(Pipeline* pipeline) {
+  creation_queue_.Expedite(
+      [pipeline](const PipelineCreationArguments& request) {
+        return &request.pipeline->second == pipeline;
+      },
+      &guest_shader_cache_.translator());
 }
 
 VkPipeline VulkanPipelineCache::CreateQueuedPipeline(

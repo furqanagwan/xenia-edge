@@ -575,6 +575,13 @@ ID3D12PipelineState* PipelineCache::AwaitRealD3D12PipelineByHandle(
   return GetD3D12PipelineByHandle(handle);
 }
 
+void PipelineCache::ExpeditePipeline(void* handle) {
+  Pipeline* pipeline = static_cast<Pipeline*>(handle);
+  creation_queue_.Expedite(
+      [pipeline](Pipeline* request) { return request == pipeline; },
+      &guest_shader_cache_.translator());
+}
+
 SpirvShader* PipelineCache::LoadShader(xenos::ShaderType shader_type,
                                        const uint32_t* host_address,
                                        uint32_t dword_count) {
@@ -2544,7 +2551,7 @@ const std::vector<uint8_t>* PipelineCache::GetMesaRovPlaceholderPixelShader(
 
 ID3D12PipelineState* PipelineCache::CreateQueuedPipeline(
     Pipeline* pipeline, SpirvShaderTranslator* mesa_spirv_translator) {
-  // Build the deferred DXIL off the main thread.
+  // Build the deferred DXIL, off the main thread unless expedited.
   EnsurePipelineShadersTranslated(pipeline, mesa_spirv_translator);
   return CreateD3D12Pipeline(pipeline->description);
 }

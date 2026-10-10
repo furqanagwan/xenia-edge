@@ -214,6 +214,9 @@ class PipelineCache : public GuestSpirvShaderCache::Host {
   // queries, where the no-op placeholder would skip the guest shader's pixel
   // kills and miscount.
   ID3D12PipelineState* AwaitRealD3D12PipelineByHandle(void* handle);
+  // Stores a pipeline still being created without waiting for anything else
+  // queued, for a draw that can't use a stand-in.
+  void ExpeditePipeline(void* handle);
 
   ID3D12RootSignature* GetRootSignatureByHandle(void* handle) const {
     return reinterpret_cast<const Pipeline*>(handle)
@@ -594,10 +597,10 @@ class PipelineCache : public GuestSpirvShaderCache::Host {
   };
 
   // Builds the deferred DXIL for a pipeline on the calling thread (a creation
-  // thread, or the processor thread in blocking mode). Storage warm-up
-  // pipelines defer the whole build. Live async pipelines defer only the pixel
-  // shader. The translation runs on mesa_spirv_translator (one per creation
-  // thread).
+  // thread, or the processor thread in blocking mode or when expediting).
+  // Storage warm-up pipelines defer the whole build. Live async pipelines defer
+  // only the pixel shader. The translation runs on mesa_spirv_translator, the
+  // calling thread's own.
   void EnsurePipelineShadersTranslated(
       Pipeline* pipeline, SpirvShaderTranslator* mesa_spirv_translator);
 
@@ -621,7 +624,7 @@ class PipelineCache : public GuestSpirvShaderCache::Host {
   ShaderStorageWriter<PipelineStoredDescription> storage_writer_;
 
   // Builds one queued pipeline, on a creation thread or on the processor thread
-  // draining the warm-up queue. Null if it failed.
+  // draining the warm-up queue or expediting it. Null if it failed.
   ID3D12PipelineState* CreateQueuedPipeline(
       Pipeline* pipeline, SpirvShaderTranslator* mesa_spirv_translator);
   // Swaps a created pipeline (or a failure, |state| null) into its entry.
