@@ -203,7 +203,8 @@ class VulkanPipelineCache : public GuestSpirvShaderCache::Host {
   // Whether ConfigurePipeline can create the pipeline asynchronously (so the
   // draw thread doesn't translate shaders itself). The use_async condition
   // inside ConfigurePipeline, which also needs the draw to allow a stand-in.
-  // has_pixel_shader because the async placeholder path needs a pixel shader.
+  // has_pixel_shader because without one the only stand-in is skipping the
+  // draw, which async_shader_skip_draws governs.
   bool CanCreatePipelineAsync(bool has_pixel_shader) const;
 
  private:

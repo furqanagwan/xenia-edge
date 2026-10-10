@@ -2764,8 +2764,8 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
   }
   const char* stand_in_wait_reason =
       render_target_cache_->GetPipelineStandInWaitReason(
-          frame_current_, *vertex_shader, memexport_used,
-          pipeline_cache_->IsStorageWarmUpRunning());
+          frame_current_, *vertex_shader, memexport_used_vertex,
+          memexport_used_pixel, pipeline_cache_->IsStorageWarmUpRunning());
 
   // Create the pipeline (for this, need the actually used render target formats
   // from the render target cache), translating the shaders - doing this now to

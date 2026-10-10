@@ -243,11 +243,13 @@ class RenderTargetCache {
   // fine. A stand-in only suits a pass redrawn every frame. The draw waits for
   // a new vertex shader drawing to a render target not drawn recently (maybe a
   // one-off render to a texture), a small render target (generated data) or
-  // memexport, whose output isn't redone. Nothing uses a stand-in while the
-  // storage warm-up runs. Call once per draw, after Update.
+  // pixel shader memexport, whose output isn't redone. A new vertex shader with
+  // memexport waits too, as its output may be written only once. Nothing uses a
+  // stand-in while the storage warm-up runs. Call once per draw, after Update.
   const char* GetPipelineStandInWaitReason(uint64_t frame,
                                            Shader& vertex_shader,
-                                           bool memexport_used,
+                                           bool vertex_memexport_used,
+                                           bool pixel_memexport_used,
                                            bool storage_warm_up_running);
   std::string GetLastUpdateDrawTargetName() const;
 

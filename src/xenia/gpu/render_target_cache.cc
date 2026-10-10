@@ -1340,8 +1340,8 @@ bool RenderTargetCache::TrackLastUpdateDrawTarget(uint64_t frame) {
 }
 
 const char* RenderTargetCache::GetPipelineStandInWaitReason(
-    uint64_t frame, Shader& vertex_shader, bool memexport_used,
-    bool storage_warm_up_running) {
+    uint64_t frame, Shader& vertex_shader, bool vertex_memexport_used,
+    bool pixel_memexport_used, bool storage_warm_up_running) {
   bool draw_target_recurring = TrackLastUpdateDrawTarget(frame);
   bool vertex_shader_drawn = vertex_shader.is_drawn();
   vertex_shader.set_drawn();
@@ -1351,8 +1351,12 @@ const char* RenderTargetCache::GetPipelineStandInWaitReason(
   if (IsLastUpdateDrawTargetSmall()) {
     return "small render target";
   }
-  if (memexport_used) {
-    return "memexport";
+  if (pixel_memexport_used) {
+    return "pixel memexport";
+  }
+  // A recurring render target says nothing about memexport output.
+  if (vertex_memexport_used && !vertex_shader_drawn) {
+    return "new memexport VS";
   }
   if (!draw_target_recurring && !vertex_shader_drawn) {
     return "new VS, not drawn recently";

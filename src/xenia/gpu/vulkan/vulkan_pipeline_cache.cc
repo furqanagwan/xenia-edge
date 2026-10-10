@@ -588,9 +588,12 @@ bool VulkanPipelineCache::EnsureShadersTranslated(
 }
 
 bool VulkanPipelineCache::CanCreatePipelineAsync(bool has_pixel_shader) const {
-  // Nothing draws with a stand-in while the storage warm-up runs.
+  // Nothing draws with a stand-in while the storage warm-up runs. Without a
+  // pixel shader the only stand-in is skipping the draw, which
+  // async_shader_skip_draws governs.
   return cvars::async_shader_compilation && creation_queue_.has_threads() &&
-         has_pixel_shader && placeholder_pixel_shader_ != VK_NULL_HANDLE &&
+         (has_pixel_shader || cvars::async_shader_skip_draws) &&
+         placeholder_pixel_shader_ != VK_NULL_HANDLE &&
          !IsStorageWarmUpRunning();
 }
 
@@ -740,30 +743,34 @@ bool VulkanPipelineCache::ConfigurePipeline(
     }
   }
 
-  // Pipeline hot-swap: When async mode is enabled, we have creation threads and
-  // a pixel shader, create a placeholder pipeline immediately (fast compile)
-  // and queue the real pipeline creation in the background. This reduces
-  // stutter from pipeline compilation. A draw that can't use a stand-in gets
-  // its pipeline created here.
+  // Pipeline hot-swap: When async mode is enabled and we have creation threads,
+  // create a placeholder pipeline immediately (fast compile) for a draw with a
+  // pixel shader and queue the real pipeline creation in the background. This
+  // reduces stutter from pipeline compilation. A draw that can't use a
+  // stand-in gets its pipeline created here.
   bool use_async =
       CanCreatePipelineAsync(pixel_shader != nullptr) && stand_in_allowed;
 
-  // The interpreter can only stand in via the async placeholder path.
-  use_interpreter =
-      use_interpreter && use_async && ucode_interpreter_vs_ != VK_NULL_HANDLE;
+  // The interpreter can only stand in via the async placeholder path. There's
+  // no vertex-only placeholder as it would compile the real vertex shader all
+  // the same.
+  use_interpreter = use_interpreter && use_async && pixel_shader &&
+                    ucode_interpreter_vs_ != VK_NULL_HANDLE;
 
   if (use_async) {
     // The draw thread only translates for an async pipeline it expedites.
     // Create an immediate placeholder when we can -
     // the interpreter VS, or the real VS if it's already translated - and queue
     // the real pipeline (translate + create) on a background thread. A
-    // non-interpretable draw whose shaders aren't translated yet gets NO
-    // placeholder; the caller skips it until the real pipeline is ready. The
-    // pipeline layout starts minimal (0 texture counts from untranslated
-    // shaders) and is upgraded to the real one on the creation thread.
+    // non-interpretable draw whose shaders aren't translated yet, or one
+    // without a pixel shader, gets NO placeholder. The caller skips it until
+    // the real pipeline is ready. The pipeline layout starts minimal (0 texture
+    // counts from untranslated shaders) and is upgraded to the real one on the
+    // creation thread.
     pipeline_pair.second.uses_interpreter.store(use_interpreter,
                                                 std::memory_order_release);
-    bool make_placeholder = use_interpreter || vertex_shader->is_translated();
+    bool make_placeholder =
+        pixel_shader && (use_interpreter || vertex_shader->is_translated());
     if (make_placeholder) {
       // Set is_placeholder BEFORE creating the pipeline to avoid a race with
       // the creation thread checking this flag.
@@ -823,9 +830,9 @@ bool VulkanPipelineCache::ConfigurePipeline(
                                                 std::memory_order_relaxed);
     creation_queue_.Push(creation_arguments);
   } else {
-    // Sync mode (no creation threads / async off / no pixel shader / storage
-    // warm-up / no stand-in allowed): translate on this thread and create the
-    // pipeline immediately.
+    // Sync mode (no creation threads / async off / no pixel shader without
+    // async_shader_skip_draws / storage warm-up / no stand-in allowed):
+    // translate on this thread and create the pipeline immediately.
     if (!vertex_shader->is_translated() ||
         (pixel_shader && !pixel_shader->is_translated())) {
       if (!EnsureShadersTranslated(vertex_shader, pixel_shader)) {

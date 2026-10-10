@@ -3639,9 +3639,10 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
         pipeline_cache_->CanCreatePipelineAsync(pixel_shader != nullptr);
     // A draw with no placeholder to render it now: the interpreter can't stand
     // in AND the real VS isn't translated yet (so no real-VS + no-op-PS
-    // placeholder either). These are the draws async_shader_skip_draws governs.
-    // Interpreter-eligible draws and draws whose VS is already translated
-    // always have a placeholder and never translate on the draw thread.
+    // placeholder either). These are the draws async_shader_skip_draws governs,
+    // as are draws without a pixel shader. Interpreter-eligible draws and draws
+    // whose VS is already translated have a placeholder when they have a pixel
+    // shader and never translate on the draw thread.
     // Only decides whether to translate here. Whether the draw can render is
     // read off the pipeline itself, which may have gained a placeholder since.
     bool no_placeholder = async_available && !use_interpreter &&
@@ -3750,8 +3751,8 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
   }
   const char* stand_in_wait_reason =
       render_target_cache_->GetPipelineStandInWaitReason(
-          frame_current_, *vertex_shader, memexport_used,
-          pipeline_cache_->IsStorageWarmUpRunning());
+          frame_current_, *vertex_shader, memexport_used_vertex,
+          memexport_used_pixel, pipeline_cache_->IsStorageWarmUpRunning());
 
   // Create the pipeline (for this, need the render pass from the render target
   // cache), translating the shaders - doing this now to obtain the used

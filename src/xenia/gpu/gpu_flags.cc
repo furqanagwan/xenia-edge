@@ -214,9 +214,9 @@ DEFINE_bool(
     async_shader_skip_draws, true,
     "Skip draws whose shaders can't render immediately via a placeholder "
     "(no interpreter stand-in, e.g. tessellation or textured/memexport/loop "
-    "vertex shaders) until their real pipeline compiles in the background, "
-    "instead of translating them on the draw thread. Avoids stutter but the "
-    "geometry pops in a few frames later.",
+    "vertex shaders, or no pixel shader) until their real pipeline compiles in "
+    "the background. Avoids stutter but what they draw appears a few frames "
+    "late.",
     "GPU");
 
 DEFINE_bool(

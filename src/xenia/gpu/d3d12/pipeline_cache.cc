@@ -1159,18 +1159,20 @@ bool PipelineCache::ConfigurePipeline(
 
   // Check if we should use async pipeline creation.
   // When enabled, defer shader translation and pipeline creation to background.
-  // A draw that can't use a stand-in gets its pipeline created here.
-  // Only use async when there's a pixel shader - VS-only pipelines are fast
-  // to compile and don't benefit from async (vertex shaders are small).
+  // A draw that can't use a stand-in gets its pipeline created here. Without a
+  // pixel shader the only stand-in is skipping the draw, which
+  // async_shader_skip_draws governs.
   bool use_async = cvars::async_shader_compilation &&
                    creation_queue_.has_threads() && stand_in_allowed &&
-                   pixel_shader != nullptr;
+                   (pixel_shader != nullptr || cvars::async_shader_skip_draws);
   // An immediate hot-swap placeholder pipeline needs the real vertex shader and
   // a root signature that does not depend on the (not-yet-translated) pixel
   // shader. Only bindless mode has such a fixed root signature, so the
   // placeholder is limited to it. Bindful async still defers everything and the
-  // draw is skipped until the real pipeline is ready.
-  bool use_placeholder = use_async && bindless_resources_used_;
+  // draw is skipped until the real pipeline is ready. There's no vertex-only
+  // placeholder as it would compile the real vertex shader all the same.
+  bool use_placeholder =
+      use_async && bindless_resources_used_ && pixel_shader != nullptr;
 
   // D3D12 produces plain vertex or tessellation domain host vertex shader
   // types. Point, rect and quad expansion is the built-in geometry shader. Both
@@ -1191,9 +1193,10 @@ bool PipelineCache::ConfigurePipeline(
   bool defer_without_placeholder = use_placeholder && !make_interpreter &&
                                    !vertex_shader->is_translated() &&
                                    cvars::async_shader_skip_draws;
-  // Both cases build both shaders on the creation thread (the interpreter
-  // behind a placeholder, the skip case behind nothing).
-  bool defer_both = make_interpreter || defer_without_placeholder;
+  // These build all their shaders on the creation thread (the interpreter
+  // behind a placeholder, the skip cases behind nothing).
+  bool defer_both = make_interpreter || defer_without_placeholder ||
+                    (use_async && pixel_shader == nullptr);
   if (host_vs_type != Shader::HostVertexShaderType::kVertex &&
       !Shader::IsHostVertexShaderTypeDomain(host_vs_type)) {
     XELOGE(
@@ -1434,8 +1437,8 @@ bool PipelineCache::ConfigurePipeline(
     new_pipeline->pending_vertex_shader =
         (use_placeholder && !defer_both) ? nullptr : vertex_shader;
     new_pipeline->pending_pixel_shader = pixel_shader;
-    // The skip case (defer_without_placeholder) intentionally creates no
-    // placeholder - state stays null and the draw is dropped until ready.
+    // The skip cases (defer_without_placeholder or no pixel shader) create no
+    // placeholder. The state stays null and the draw is dropped until ready.
     if (use_placeholder && !defer_without_placeholder) {
       // Create a placeholder pipeline now so the draw can proceed immediately -
       // real VS + stand-in PS, or (interpreter) the ucode interpreter VS +
