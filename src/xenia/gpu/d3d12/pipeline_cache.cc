@@ -97,6 +97,21 @@ namespace shaders_spirv {
 #include "xenia/gpu/shaders/bytecode/vulkan_spirv/tessellation_indexed_vs.h"
 }  // namespace shaders_spirv
 
+namespace {
+// Converts one of the translator's synthetic depth-only pixel shaders to Mesa
+// (spirv_to_dxil) DXIL, empty on failure.
+std::vector<uint8_t> TranslateDepthOnlyPixelShader(
+    const std::vector<uint8_t>& spirv) {
+  if (spirv.empty()) {
+    return {};
+  }
+  return SpirvToDxilCompiler::Translate(
+      reinterpret_cast<const uint32_t*>(spirv.data()),
+      spirv.size() / sizeof(uint32_t), SpirvToDxilCompiler::Stage::kPixel,
+      /*lower_to_bindless=*/true);
+}
+}  // namespace
+
 PipelineCache::PipelineCache(D3D12CommandProcessor& command_processor,
                              const RegisterFile& register_file,
                              const D3D12RenderTargetCache& render_target_cache,
@@ -126,22 +141,9 @@ bool PipelineCache::Initialize() {
     return false;
   }
 
-  // Generates the Mesa (spirv_to_dxil) DXIL for one of the translator's
-  // synthetic depth-only pixel shaders.
-  auto translate_depth_only = [](std::vector<uint8_t> spirv) {
-    std::vector<uint8_t> dxil;
-    if (!spirv.empty()) {
-      dxil = SpirvToDxilCompiler::Translate(
-          reinterpret_cast<const uint32_t*>(spirv.data()),
-          spirv.size() / sizeof(uint32_t), SpirvToDxilCompiler::Stage::kPixel,
-          /*lower_to_bindless=*/true);
-    }
-    return dxil;
-  };
-
   // D3D drops pixel-shader-less draws that write no depth or stencil, which
   // breaks occlusion queries, so those get an empty pixel shader instead.
-  mesa_depth_only_pixel_shader_ = translate_depth_only(
+  mesa_depth_only_pixel_shader_ = TranslateDepthOnlyPixelShader(
       guest_shader_cache_.translator().CreateDepthOnlyFragmentShader());
   if (mesa_depth_only_pixel_shader_.empty()) {
     // Without it such draws fall back to no pixel shader, which D3D may drop.
@@ -158,14 +160,14 @@ bool PipelineCache::Initialize() {
         SpirvShaderTranslator::Modification::DepthStencilMode;
     SpirvShaderTranslator& translator = guest_shader_cache_.translator();
     zpd_total_depth_only_pixel_shader_ =
-        translate_depth_only(translator.CreateDepthOnlyFragmentShader(
+        TranslateDepthOnlyPixelShader(translator.CreateDepthOnlyFragmentShader(
             DepthStencilMode::kNoModifiers, true));
     if (render_target_cache_.depth_float24_convert_in_pixel_shader()) {
-      zpd_total_float24_truncate_pixel_shader_ =
-          translate_depth_only(translator.CreateDepthOnlyFragmentShader(
+      zpd_total_float24_truncate_pixel_shader_ = TranslateDepthOnlyPixelShader(
+          translator.CreateDepthOnlyFragmentShader(
               DepthStencilMode::kFloat24Truncating, true));
-      zpd_total_float24_round_pixel_shader_ =
-          translate_depth_only(translator.CreateDepthOnlyFragmentShader(
+      zpd_total_float24_round_pixel_shader_ = TranslateDepthOnlyPixelShader(
+          translator.CreateDepthOnlyFragmentShader(
               DepthStencilMode::kFloat24Rounding, true));
     }
     if (zpd_total_depth_only_pixel_shader_.empty()) {
@@ -183,15 +185,9 @@ bool PipelineCache::Initialize() {
       RenderTargetCache::Path::kPixelShaderInterlock) {
     for (size_t i = 0; i < xe::countof(mesa_depth_only_rov_pixel_shaders_);
          ++i) {
-      std::vector<uint8_t> depth_only_spirv =
+      mesa_depth_only_rov_pixel_shaders_[i] = TranslateDepthOnlyPixelShader(
           guest_shader_cache_.translator().CreateDepthOnlyFragmentShader(
-              xenos::MsaaSamples(i));
-      if (!depth_only_spirv.empty()) {
-        mesa_depth_only_rov_pixel_shaders_[i] = SpirvToDxilCompiler::Translate(
-            reinterpret_cast<const uint32_t*>(depth_only_spirv.data()),
-            depth_only_spirv.size() / sizeof(uint32_t),
-            SpirvToDxilCompiler::Stage::kPixel, /*lower_to_bindless=*/true);
-      }
+              xenos::MsaaSamples(i)));
       if (mesa_depth_only_rov_pixel_shaders_[i].empty()) {
         XELOGE(
             "spirv_to_dxil: failed to generate the {}-sample Mesa ROV "
@@ -200,15 +196,9 @@ bool PipelineCache::Initialize() {
             UINT32_C(1) << i);
         return false;
       }
-      std::vector<uint8_t> viz_survey_spirv =
+      mesa_viz_survey_rov_pixel_shaders_[i] = TranslateDepthOnlyPixelShader(
           guest_shader_cache_.translator().CreateDepthOnlyFragmentShader(
-              xenos::MsaaSamples(i), true);
-      if (!viz_survey_spirv.empty()) {
-        mesa_viz_survey_rov_pixel_shaders_[i] = SpirvToDxilCompiler::Translate(
-            reinterpret_cast<const uint32_t*>(viz_survey_spirv.data()),
-            viz_survey_spirv.size() / sizeof(uint32_t),
-            SpirvToDxilCompiler::Stage::kPixel, /*lower_to_bindless=*/true);
-      }
+              xenos::MsaaSamples(i), true));
     }
   }
 
@@ -1433,9 +1423,9 @@ bool PipelineCache::ConfigurePipeline(
     // placeholder - state stays null and the draw is dropped until ready.
     if (use_placeholder && !defer_without_placeholder) {
       // Create a placeholder pipeline now so the draw can proceed immediately -
-      // real VS + no-op PS, or (interpreter) the ucode interpreter VS + no-op/
-      // debug PS with both real shaders deferred. The creation thread swaps in
-      // the real pipeline when translation finishes.
+      // real VS + stand-in PS, or (interpreter) the ucode interpreter VS +
+      // stand-in PS with both real shaders deferred. The creation thread swaps
+      // in the real pipeline when translation finishes.
       ID3D12PipelineState* placeholder_state = CreateD3D12Pipeline(
           runtime_description, make_interpreter
                                    ? PipelinePlaceholderMode::kInterpreter
@@ -2027,7 +2017,7 @@ ID3D12PipelineState* PipelineCache::CreateD3D12Pipeline(
   const PipelineDescription& description = runtime_description.description;
   bool as_interpreter =
       placeholder_mode == PipelinePlaceholderMode::kInterpreter;
-  // Both placeholder variants substitute the no-op (or debug) pixel shader.
+  // Both placeholder variants substitute a stand-in for the real pixel shader.
   bool as_placeholder = placeholder_mode != PipelinePlaceholderMode::kNone;
 
   if (runtime_description.pixel_shader != nullptr) {
@@ -2166,8 +2156,26 @@ ID3D12PipelineState* PipelineCache::CreateD3D12Pipeline(
     // on the host render target path to make the interim geometry visible.
     if (edram_rov_used) {
       // Color and depth both go through the pixel shader here, so the no-op
-      // would draw nothing at all. Write depth like a depth-only draw.
-      use_rov_depth_only_pixel_shader();
+      // would draw nothing at all. Write depth like a depth-only draw, with the
+      // inputs of the pixel shader stood in for so the signatures link. The
+      // interpreter vertex shader outputs only the position.
+      uint64_t input_modification =
+          as_interpreter
+              ? 0
+              : SpirvShaderTranslator::GetPixelShaderInputModification(
+                    description.pixel_shader_modification);
+      if (!input_modification) {
+        use_rov_depth_only_pixel_shader();
+      } else {
+        const std::vector<uint8_t>* placeholder_pixel_shader =
+            GetMesaRovPlaceholderPixelShader(input_modification,
+                                             description.guest_msaa_samples);
+        if (!placeholder_pixel_shader) {
+          return nullptr;
+        }
+        state_desc.PS.pShaderBytecode = placeholder_pixel_shader->data();
+        state_desc.PS.BytecodeLength = placeholder_pixel_shader->size();
+      }
     } else if (as_interpreter &&
                cvars::async_shader_vs_interpreter_debug_color) {
       state_desc.PS.pShaderBytecode = shaders::placeholder_color_ps;
@@ -2507,6 +2515,28 @@ ID3D12PipelineState* PipelineCache::CreateD3D12Pipeline(
   }
   state->SetName(name.c_str());
   return state;
+}
+
+const std::vector<uint8_t>* PipelineCache::GetMesaRovPlaceholderPixelShader(
+    uint64_t input_modification, xenos::MsaaSamples msaa_samples) {
+  SpirvShaderTranslator::Modification key(input_modification);
+  key.pixel.set_fsi_msaa_samples(msaa_samples);
+  auto it = mesa_rov_placeholder_pixel_shaders_.find(key.value);
+  if (it == mesa_rov_placeholder_pixel_shaders_.end()) {
+    std::vector<uint8_t> dxil = TranslateDepthOnlyPixelShader(
+        guest_shader_cache_.translator().CreateDepthOnlyFragmentShader(
+            msaa_samples, false, input_modification));
+    if (dxil.empty()) {
+      XELOGE(
+          "spirv_to_dxil: failed to generate the ROV placeholder pixel shader "
+          "for inputs {:016X}; draws with those inputs are skipped until their "
+          "pipelines are ready",
+          input_modification);
+    }
+    it = mesa_rov_placeholder_pixel_shaders_.emplace(key.value, std::move(dxil))
+             .first;
+  }
+  return it->second.empty() ? nullptr : &it->second;
 }
 
 ID3D12PipelineState* PipelineCache::CreateQueuedPipeline(

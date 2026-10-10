@@ -603,14 +603,22 @@ class SpirvShaderTranslator : public ShaderTranslator {
   // a float24 mode, the shader reads gl_FragCoord.z, converts to float24, and
   // writes the result to gl_FragDepth - matching the substitute pixel shader
   // the DXBC backend uses when a guest draw has no pixel shader.
+  // input_modification is the modification of the pixel shader stood in for.
+  // Its inputs are declared without being read so the signature links with
+  // the stage before it.
   std::vector<uint8_t> CreateDepthOnlyFragmentShader(
       Modification::DepthStencilMode depth_stencil_mode =
           Modification::DepthStencilMode::kNoModifiers,
-      bool zpd_total = false, bool viz_survey = false);
+      bool zpd_total = false, bool viz_survey = false,
+      uint64_t input_modification = 0);
   // FSI variant - specialized for one guest sample count instead of a host
   // depth / stencil mode.
   std::vector<uint8_t> CreateDepthOnlyFragmentShader(
-      xenos::MsaaSamples fsi_msaa_samples, bool viz_survey = false);
+      xenos::MsaaSamples fsi_msaa_samples, bool viz_survey = false,
+      uint64_t input_modification = 0);
+  // The part of a pixel shader modification that decides its input signature,
+  // the interpolator count and point coordinates, in a canonical form.
+  static uint64_t GetPixelShaderInputModification(uint64_t modification);
 
   // Common functions useful not only for the translator, but also for EDRAM
   // emulation via conventional render targets.

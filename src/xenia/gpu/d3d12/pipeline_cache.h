@@ -480,17 +480,23 @@ class PipelineCache : public GuestSpirvShaderCache::Host {
 
   // Hot-swap placeholder PSO variants, built with the fixed (bindless) Mesa
   // root signature so the pixel (and, for the interpreter, vertex) shader need
-  // not be translated yet.
+  // not be translated yet. The stand-in pixel shader writes no color: a no-op,
+  // the debug-color one, or on ROV a depth-only one.
   enum class PipelinePlaceholderMode {
     kNone,         // Real vertex shader + real pixel shader.
-    kRealVertex,   // Real vertex shader + no-op pixel shader.
-    kInterpreter,  // Ucode interpreter vertex shader + no-op/debug pixel
-                   // shader.
+    kRealVertex,   // Real vertex shader + stand-in pixel shader.
+    kInterpreter,  // Ucode interpreter vertex shader + stand-in pixel shader.
   };
   ID3D12PipelineState* CreateD3D12Pipeline(
       const PipelineRuntimeDescription& runtime_description,
       PipelinePlaceholderMode placeholder_mode =
           PipelinePlaceholderMode::kNone);
+  // The ROV depth-only pixel shader for a real vertex shader placeholder,
+  // declaring the inputs of a pixel shader with |input_modification| (from
+  // GetPixelShaderInputModification). nullptr if it couldn't be generated.
+  // Draw thread only.
+  const std::vector<uint8_t>* GetMesaRovPlaceholderPixelShader(
+      uint64_t input_modification, xenos::MsaaSamples msaa_samples);
 
   D3D12CommandProcessor& command_processor_;
   const RegisterFile& register_file_;
@@ -531,6 +537,10 @@ class PipelineCache : public GuestSpirvShaderCache::Host {
   // VIZ survey variants of the above, counting only ZPass as a flag.
   std::vector<uint8_t>
       mesa_viz_survey_rov_pixel_shaders_[size_t(xenos::MsaaSamples::k4X) + 1];
+  // See GetMesaRovPlaceholderPixelShader. Keyed by the input modification and
+  // the guest sample count, empty for a failure.
+  std::unordered_map<uint64_t, std::vector<uint8_t>>
+      mesa_rov_placeholder_pixel_shaders_;
 
   // Ucode hash -> shader.
   std::unordered_map<uint64_t, SpirvShader*, xe::hash::IdentityHasher<uint64_t>>
