@@ -613,8 +613,8 @@ class VulkanCommandProcessor final : public CommandProcessor {
       int32_t window_offset_tiles);
   bool UpdateBindings(const VulkanShader* vertex_shader,
                       const VulkanShader* pixel_shader,
-                      bool interpreter_placeholder = false,
-                      bool placeholder_pixel_shader = false);
+                      bool interpreter_placeholder,
+                      bool placeholder_pixel_shader);
   // Allocates a descriptor set and fills one or two VkWriteDescriptorSet
   // structure instances (for images and samplers).
   // The descriptor set layout must be the one for the given is_vertex,

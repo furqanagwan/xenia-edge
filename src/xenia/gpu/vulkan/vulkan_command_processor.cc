@@ -3516,6 +3516,8 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
   draw_util::HostDepthPolygonOffset host_depth_polygon_offset;
   bool apply_host_depth_polygon_offset = false;
   bool zpd_hybrid = false;
+  // Per shader (vertex, pixel), whether its samplers were gathered.
+  bool samplers_gathered[2] = {};
 
   // Two iterations because a submission (even the current one - in which case
   // it needs to be ended, and a new one must be started) may need to be awaited
@@ -3674,8 +3676,8 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
         continue;
       }
       // Don't read a shader's sampler bindings while a creation thread is still
-      // populating them (async draws don't translate here). A placeholder draw
-      // that ends up using this shader binds no samplers for it anyway.
+      // populating them (async draws don't translate here). If the bound
+      // pipeline ends up running this shader the draw is redone below.
       if (!shader->bindings_ready()) {
         if (!i) {
           shader_samplers.clear();
@@ -3685,6 +3687,7 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
       const std::vector<VulkanShader::SamplerBinding>& shader_sampler_bindings =
           shader->GetSamplerBindingsAfterTranslation();
       if (!i) {
+        samplers_gathered[j] = true;
         shader_samplers.reserve(shader_sampler_bindings.size());
         for (const VulkanShader::SamplerBinding& shader_sampler_binding :
              shader_sampler_bindings) {
@@ -3791,14 +3794,6 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
         double(xe::Clock::QueryHostTickCount() - await_start) * 1000.0 /
             double(xe::Clock::QueryHostTickFrequency()));
     current_pipeline = pipeline->pipeline.load(std::memory_order_acquire);
-    if (current_pipeline != VK_NULL_HANDLE &&
-        current_pipeline !=
-            pipeline->placeholder_pipeline.load(std::memory_order_acquire)) {
-      // The samplers were gathered while the bindings weren't ready - redo the
-      // draw with the real pipeline, which won't wait again.
-      return IssueDraw(prim_type, index_count, index_buffer_info,
-                       major_mode_explicit);
-    }
   }
   if (current_pipeline == VK_NULL_HANDLE) {
     // Nothing to draw with yet - no placeholder, real pipeline still building.
@@ -3809,16 +3804,35 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
     OnVIZSurveyDraw(false);
     return true;
   }
+  // Whether the placeholder pipeline is bound rather than the real one. Derived
+  // from the handle actually bound so it stays consistent with current_pipeline
+  // when a creation thread swaps in the real pipeline mid-draw.
+  bool bound_is_placeholder =
+      current_pipeline ==
+      pipeline->placeholder_pipeline.load(std::memory_order_acquire);
+  // The interpreter placeholder (interpreter VS + no-op PS) also needs its
+  // ucode location + full float constants fed to it.
+  bool interpreter_placeholder =
+      bound_is_placeholder &&
+      pipeline->uses_interpreter.load(std::memory_order_acquire);
+  // Any placeholder draw binds the placeholder pixel shader, which never
+  // samples. Its pixel textures and samplers must not be bound as the
+  // placeholder pipeline's layout has none.
+  bool placeholder_pixel_shader = bound_is_placeholder;
   // The interpreter reads the guest ucode from shared memory by its program
   // address. A cached interpreter placeholder reused for an inline
   // (IM_LOAD_IMMEDIATE, address 0) shader can't be fed, so skip until the real
   // pipeline is ready rather than interpret from address 0.
-  if (active_vertex_shader_ucode_address_ == 0 &&
-      current_pipeline ==
-          pipeline->placeholder_pipeline.load(std::memory_order_acquire) &&
-      pipeline->uses_interpreter.load(std::memory_order_acquire)) {
+  if (active_vertex_shader_ucode_address_ == 0 && interpreter_placeholder) {
     OnVIZSurveyDraw(false);
     return true;
+  }
+  // A creation thread may have finished a shader the bound pipeline runs after
+  // its samplers were gathered. Redo the draw to gather them.
+  if ((!samplers_gathered[0] && !interpreter_placeholder) ||
+      (pixel_shader && !samplers_gathered[1] && !placeholder_pixel_shader)) {
+    return IssueDraw(prim_type, index_count, index_buffer_info,
+                     major_mode_explicit);
   }
 
   // Push debug marker with Xbox 360 draw context for RenderDoc annotation.
@@ -3984,23 +3998,6 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
       apply_host_depth_polygon_offset ? &host_depth_polygon_offset : nullptr,
       window_offset_tiles);
 
-  // Whether we bound the placeholder pipeline (vs the real one). Derived from
-  // the handle actually bound, so it's consistent with current_pipeline even if
-  // the creation thread swaps in the real pipeline mid-draw (the is_placeholder
-  // flag is cleared a few instructions later, so reading it separately can
-  // disagree).
-  bool bound_is_placeholder =
-      current_pipeline ==
-      pipeline->placeholder_pipeline.load(std::memory_order_acquire);
-  // The interpreter placeholder (interpreter VS + no-op PS) also needs its
-  // ucode location + full float constants fed to it.
-  bool interpreter_placeholder =
-      bound_is_placeholder &&
-      pipeline->uses_interpreter.load(std::memory_order_acquire);
-  // Any placeholder draw binds the no-op placeholder pixel shader (which never
-  // samples), so its pixel textures/samplers must not be bound - the
-  // placeholder pipeline's layout has none.
-  bool placeholder_pixel_shader = bound_is_placeholder;
   {
     uint32_t ucode_base_dwords = 0, cf_instr_count = 0;
     if (interpreter_placeholder) {
@@ -4213,7 +4210,8 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
         normalized_depth_control, normalized_color_mask,
         apply_host_depth_polygon_offset ? &host_depth_polygon_offset : nullptr,
         window_offset_tiles);
-    if (!UpdateBindings(vertex_shader, pixel_shader)) {
+    if (!UpdateBindings(vertex_shader, pixel_shader, interpreter_placeholder,
+                        placeholder_pixel_shader)) {
       return false;
     }
   }

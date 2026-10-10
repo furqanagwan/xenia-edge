@@ -12,6 +12,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
+#include <thread>
 
 #include "third_party/fmt/include/fmt/format.h"
 #include "third_party/glslang/SPIRV/GLSL.std.450.h"
@@ -1396,6 +1397,12 @@ void SpirvShaderTranslator::PostTranslation() {
     // after they are fully written, so a PS translated on a creation thread is
     // only consulted once its bindings are complete.
     spirv_shader->bindings_ready_.store(true, std::memory_order_release);
+  } else if (spirv_shader) {
+    // Wait for the translation still publishing the shader's bindings since
+    // this one counts as done on return.
+    while (!spirv_shader->bindings_ready()) {
+      std::this_thread::yield();
+    }
   }
 }
 
