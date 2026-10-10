@@ -3517,6 +3517,10 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
   draw_util::HostDepthPolygonOffset host_depth_polygon_offset;
   bool apply_host_depth_polygon_offset = false;
   bool zpd_hybrid = false;
+  // A skipped occlusion query draw counts nothing and gets what it tests
+  // culled. A placeholder mostly overcounts as it skips the guest shader's
+  // pixel kills. Surveys never count for a report.
+  bool skip_allowed = true;
   // Per shader (vertex, pixel), whether its samplers were gathered.
   bool samplers_gathered[2] = {};
 
@@ -3583,6 +3587,7 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
                            normalized_depth_control, normalized_color_mask,
                            apply_host_depth_polygon_offset)
                      : SpirvShaderTranslator::Modification(0);
+    skip_allowed = !active_segment_.report_measuring() || viz_survey;
     // Hybrid occlusion query draw, counting coverage into the Total counter.
     // Only depth or stencil tested draws w/o depth writes, so scene geometry
     // keeps early depth rejection, and nothing can fail without a test anyway.
@@ -3651,9 +3656,14 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
     // being skipped (so it can render via a real-VS placeholder).
     bool translate_here =
         !async_available || (no_placeholder && !cvars::async_shader_skip_draws);
-    if (translate_here) {
-      if (!pipeline_cache_->EnsureShadersTranslated(vertex_shader_translation,
-                                                    pixel_shader_translation)) {
+    // A draw that can't be skipped needs only its vertex shader for a real-VS
+    // placeholder.
+    bool translate_vertex_here =
+        !translate_here && no_placeholder && pixel_shader && !skip_allowed;
+    if (translate_here || translate_vertex_here) {
+      if (!pipeline_cache_->EnsureShadersTranslated(
+              vertex_shader_translation,
+              translate_here ? pixel_shader_translation : nullptr)) {
         return false;
       }
     }
@@ -3795,15 +3805,19 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
   // pipeline will be swapped in by the creation thread when ready.
   VkPipeline current_pipeline =
       pipeline->pipeline.load(std::memory_order_acquire);
-  if (stand_in_wait_reason &&
+  const char* wait_reason = stand_in_wait_reason;
+  if (!wait_reason && !skip_allowed && current_pipeline == VK_NULL_HANDLE) {
+    wait_reason = "occlusion query";
+  }
+  if (wait_reason &&
       pipeline->creation_pending.load(std::memory_order_acquire)) {
     uint64_t await_start = xe::Clock::QueryHostTickCount();
     pipeline_cache_->ExpeditePipeline(pipeline);
     XELOGI(
         "Awaited real pipeline for a draw into {} ({}): VS {:016X}, PS "
         "{:016X}, {:.2f} ms",
-        render_target_cache_->GetLastUpdateDrawTargetName(),
-        stand_in_wait_reason, vertex_shader->ucode_data_hash(),
+        render_target_cache_->GetLastUpdateDrawTargetName(), wait_reason,
+        vertex_shader->ucode_data_hash(),
         pixel_shader ? pixel_shader->ucode_data_hash() : 0,
         double(xe::Clock::QueryHostTickCount() - await_start) * 1000.0 /
             double(xe::Clock::QueryHostTickFrequency()));

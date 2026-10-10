@@ -159,7 +159,9 @@ class PipelineCache : public GuestSpirvShaderCache::Host {
       Shader::HostVertexShaderType host_vertex_shader_type);
 
   // If draw_util::IsRasterizationPotentiallyDone is false, the pixel shader
-  // MUST be made nullptr BEFORE calling this!
+  // MUST be made nullptr BEFORE calling this! Without skip_allowed, a draw with
+  // a pixel shader gets a placeholder even if its vertex shader has to be
+  // translated here for it.
   bool ConfigurePipeline(
       Shader::Translation* vertex_shader, Shader::Translation* pixel_shader,
       const PrimitiveProcessor::ProcessingResult& primitive_processing_result,
@@ -168,20 +170,16 @@ class PipelineCache : public GuestSpirvShaderCache::Host {
       bool zpd_total, bool viz_survey,
       uint32_t bound_depth_and_color_render_target_bits,
       const uint32_t* bound_depth_and_color_render_targets_formats,
-      bool use_interpreter, bool stand_in_allowed, void** pipeline_handle_out,
-      ID3D12RootSignature** root_signature_out);
+      bool use_interpreter, bool stand_in_allowed, bool skip_allowed,
+      void** pipeline_handle_out, ID3D12RootSignature** root_signature_out);
 
   // Returns a pipeline with deferred creation by its handle. May return nullptr
   // if failed to create the pipeline or still being created asynchronously.
   // While async creation is in progress this may be a placeholder pipeline
   // (real vertex shader, no-op pixel shader) that the creation thread swaps for
-  // the real one when ready - check IsPlaceholderPipeline if that matters.
+  // the real one when ready. GetD3D12PipelineForDraw tells which.
   ID3D12PipelineState* GetD3D12PipelineByHandle(void* handle) const {
     return reinterpret_cast<const Pipeline*>(handle)->state.load(
-        std::memory_order_acquire);
-  }
-  bool IsPlaceholderPipeline(void* handle) const {
-    return reinterpret_cast<const Pipeline*>(handle)->is_placeholder.load(
         std::memory_order_acquire);
   }
   // Whether the real pipeline is still being created, so awaiting it can help.
@@ -213,11 +211,6 @@ class PipelineCache : public GuestSpirvShaderCache::Host {
     return state;
   }
   ID3D12PipelineState* AwaitD3D12PipelineByHandle(void* handle);
-  // Waits until the real (non-placeholder) pipeline for the handle is ready,
-  // returning it (or nullptr if its creation failed). Needed by occlusion
-  // queries, where the no-op placeholder would skip the guest shader's pixel
-  // kills and miscount.
-  ID3D12PipelineState* AwaitRealD3D12PipelineByHandle(void* handle);
   // Stores a pipeline still being created without waiting for anything else
   // queued, for a draw that can't use a stand-in.
   void ExpeditePipeline(void* handle);
@@ -562,19 +555,15 @@ class PipelineCache : public GuestSpirvShaderCache::Host {
 
   struct Pipeline {
     // nullptr if creation has failed or still pending. May hold a placeholder
-    // pipeline (see is_placeholder) until the real one is swapped in.
+    // pipeline (see placeholder_state) until the real one is swapped in.
     std::atomic<ID3D12PipelineState*> state{nullptr};
-    // True while state holds a hot-swap placeholder pipeline, before the
-    // creation thread swaps in the real one.
-    std::atomic<bool> is_placeholder{false};
     // True when the placeholder rasterizes with the ucode interpreter VS (so
     // the draw must feed it full float constants + the ucode location). Only
-    // meaningful while is_placeholder.
+    // meaningful while state holds the placeholder.
     std::atomic<bool> uses_interpreter{false};
     // The placeholder PSO handle (nullptr if none). A draw loads state once and
     // compares it against this to know whether it is about to bind the
-    // placeholder, consistent even though is_placeholder is cleared a few
-    // instructions after the real pipeline is swapped into state.
+    // placeholder.
     std::atomic<ID3D12PipelineState*> placeholder_state{nullptr};
     PipelineRuntimeDescription description;
     // For background creation: stores the untranslated shaders.

@@ -565,19 +565,6 @@ ID3D12PipelineState* PipelineCache::AwaitD3D12PipelineByHandle(void* handle) {
   return GetD3D12PipelineByHandle(handle);
 }
 
-ID3D12PipelineState* PipelineCache::AwaitRealD3D12PipelineByHandle(
-    void* handle) {
-  // A non-null, non-placeholder state is already the real pipeline.
-  if (GetD3D12PipelineByHandle(handle) != nullptr &&
-      !IsPlaceholderPipeline(handle)) {
-    return GetD3D12PipelineByHandle(handle);
-  }
-  // Drain all background creation. Afterwards the real pipeline has been
-  // swapped in (or its creation failed, leaving the placeholder or nullptr).
-  AwaitPipelineCompletion();
-  return GetD3D12PipelineByHandle(handle);
-}
-
 void PipelineCache::ExpeditePipeline(void* handle) {
   Pipeline* pipeline = static_cast<Pipeline*>(handle);
   creation_queue_.Expedite(
@@ -1140,8 +1127,8 @@ bool PipelineCache::ConfigurePipeline(
     bool zpd_total, bool viz_survey,
     uint32_t bound_depth_and_color_render_target_bits,
     const uint32_t* bound_depth_and_color_render_target_formats,
-    bool use_interpreter, bool stand_in_allowed, void** pipeline_handle_out,
-    ID3D12RootSignature** root_signature_out) {
+    bool use_interpreter, bool stand_in_allowed, bool skip_allowed,
+    void** pipeline_handle_out, ID3D12RootSignature** root_signature_out) {
 #if XE_GPU_FINE_GRAINED_DRAW_SCOPES
   SCOPE_profile_cpu_f("gpu");
 #endif  // XE_GPU_FINE_GRAINED_DRAW_SCOPES
@@ -1189,10 +1176,11 @@ bool PipelineCache::ConfigurePipeline(
   // A draw the interpreter can't stand in for whose VS isn't translated yet has
   // no placeholder. With async_shader_skip_draws, defer both shaders to the
   // creation thread and skip the draw until the real pipeline is ready, instead
-  // of translating the VS inline on the draw thread.
-  bool defer_without_placeholder = use_placeholder && !make_interpreter &&
-                                   !vertex_shader->is_translated() &&
-                                   cvars::async_shader_skip_draws;
+  // of translating the VS inline on the draw thread, unless the draw can't be
+  // skipped.
+  bool defer_without_placeholder =
+      use_placeholder && !make_interpreter && !vertex_shader->is_translated() &&
+      cvars::async_shader_skip_draws && skip_allowed;
   // These build all their shaders on the creation thread (the interpreter
   // behind a placeholder, the skip cases behind nothing).
   bool defer_both = make_interpreter || defer_without_placeholder ||
@@ -1458,8 +1446,6 @@ bool PipelineCache::ConfigurePipeline(
           make_interpreter && placeholder_state != nullptr,
           std::memory_order_release);
       new_pipeline->state.store(placeholder_state, std::memory_order_release);
-      new_pipeline->is_placeholder.store(placeholder_state != nullptr,
-                                         std::memory_order_release);
       if (make_interpreter && placeholder_state != nullptr) {
         XELOGI(
             "VS interpreter placeholder created (interpreter VS + no-op PS): "
@@ -2575,7 +2561,6 @@ void PipelineCache::StoreCreatedPipeline(Pipeline* pipeline,
     // store.
     ID3D12PipelineState* old_state =
         pipeline->state.exchange(state, std::memory_order_acq_rel);
-    pipeline->is_placeholder.store(false, std::memory_order_release);
     if (old_state != nullptr) {
       std::lock_guard<std::mutex> lock(deferred_destroy_mutex_);
       deferred_destroy_pipelines_.emplace_back(
@@ -2584,9 +2569,7 @@ void PipelineCache::StoreCreatedPipeline(Pipeline* pipeline,
     pipeline->creation_pending.store(false, std::memory_order_release);
     return;
   }
-  // Real creation failed. Keep any placeholder in use, but stop reporting it as
-  // a placeholder so occlusion-query awaits do not block forever.
-  pipeline->is_placeholder.store(false, std::memory_order_release);
+  // Real creation failed. Keep any placeholder in use.
   XELOGE("Pipeline creation failed (VS {:016X}, PS {:016X})",
          pipeline->description.vertex_shader
              ? pipeline->description.vertex_shader->shader().ucode_data_hash()

@@ -2808,6 +2808,10 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
       !vertex_shader->uses_subroutine_calls() &&
       vertex_shader->memexport_eM_written() == 0 &&
       vertex_shader->constant_register_map().loop_bitmap == 0;
+  // A skipped occlusion query draw counts nothing and gets what it tests
+  // culled. A placeholder mostly overcounts as it skips the guest shader's
+  // pixel kills. Surveys never count for a report.
+  const bool skip_allowed = !active_segment_.report_measuring() || viz_survey;
   void* pipeline_handle;
   ID3D12RootSignature* root_signature;
   uint64_t inline_build_start = cvars::async_shader_compilation &&
@@ -2821,7 +2825,8 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
           normalized_color_mask, apply_host_depth_polygon_offset, zpd_hybrid,
           viz_survey, bound_depth_and_color_render_target_bits,
           bound_depth_and_color_render_target_formats, use_interpreter,
-          stand_in_wait_reason == nullptr, &pipeline_handle, &root_signature)) {
+          stand_in_wait_reason == nullptr, skip_allowed, &pipeline_handle,
+          &root_signature)) {
     return false;
   }
   if (inline_build_start) {
@@ -2841,10 +2846,18 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
   }
 
   if (cvars::async_shader_compilation) {
-    if (zpd_hybrid &&
-        pipeline_cache_->GetD3D12PipelineByHandle(pipeline_handle) == nullptr) {
-      // The counting pipeline isn't ready - draw without counting rather than
-      // stall, and re-configure for the plain modification.
+    bool hybrid_stand_in = false;
+    if (zpd_hybrid) {
+      bool hybrid_placeholder, hybrid_interpreter_placeholder;
+      hybrid_stand_in = pipeline_cache_->GetD3D12PipelineForDraw(
+                            pipeline_handle, &hybrid_placeholder,
+                            &hybrid_interpreter_placeholder) == nullptr ||
+                        hybrid_placeholder;
+    }
+    if (hybrid_stand_in) {
+      // The counting pipeline isn't ready (a placeholder doesn't count the
+      // Total). Draw without counting rather than stall, re-configured for the
+      // plain modification.
       zpd_hybrid = false;
       pixel_shader_modification = pixel_shader_modification_without_zpd;
       if (pixel_shader) {
@@ -2857,44 +2870,25 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
               normalized_color_mask, apply_host_depth_polygon_offset, false,
               viz_survey, bound_depth_and_color_render_target_bits,
               bound_depth_and_color_render_target_formats, use_interpreter,
-              stand_in_wait_reason == nullptr, &pipeline_handle,
+              stand_in_wait_reason == nullptr, skip_allowed, &pipeline_handle,
               &root_signature)) {
         return false;
       }
     }
-    if (active_segment_.report_measuring()) {
-      // Occlusion-query draws need the real pixel shader - the no-op
-      // placeholder skips the guest shader's pixel kills and would miscount.
-      // Wait for it.
-      if (pipeline_cache_->GetD3D12PipelineByHandle(pipeline_handle) ==
-              nullptr ||
-          pipeline_cache_->IsPlaceholderPipeline(pipeline_handle)) {
-        if (cvars::occlusion_query_log) {
-          XELOGI(
-              "ZPD: Awaiting real D3D12 pipeline for active query draw "
-              "VS={:016X} PS={:016X}",
-              vertex_shader ? vertex_shader->ucode_data_hash() : 0,
-              pixel_shader ? pixel_shader->ucode_data_hash() : 0);
-        }
-        if (pipeline_cache_->AwaitRealD3D12PipelineByHandle(pipeline_handle) ==
-            nullptr) {
-          XELOGE(
-              "IssueDraw: Pipeline unavailable after await for active query "
-              "draw VS={:016X} PS={:016X}",
-              vertex_shader ? vertex_shader->ucode_data_hash() : 0,
-              pixel_shader ? pixel_shader->ucode_data_hash() : 0);
-          return false;
-        }
-      }
-    } else if (stand_in_wait_reason &&
-               pipeline_cache_->IsPipelineCreationPending(pipeline_handle)) {
+    const char* wait_reason = stand_in_wait_reason;
+    if (!wait_reason && !skip_allowed &&
+        pipeline_cache_->GetD3D12PipelineByHandle(pipeline_handle) == nullptr) {
+      wait_reason = "occlusion query";
+    }
+    if (wait_reason &&
+        pipeline_cache_->IsPipelineCreationPending(pipeline_handle)) {
       uint64_t await_start = xe::Clock::QueryHostTickCount();
       pipeline_cache_->ExpeditePipeline(pipeline_handle);
       XELOGI(
           "Awaited real pipeline for a draw into {} ({}): VS {:016X}, PS "
           "{:016X}, {:.2f} ms",
-          render_target_cache_->GetLastUpdateDrawTargetName(),
-          stand_in_wait_reason, vertex_shader->ucode_data_hash(),
+          render_target_cache_->GetLastUpdateDrawTargetName(), wait_reason,
+          vertex_shader->ucode_data_hash(),
           pixel_shader ? pixel_shader->ucode_data_hash() : 0,
           double(xe::Clock::QueryHostTickCount() - await_start) * 1000.0 /
               double(xe::Clock::QueryHostTickFrequency()));
