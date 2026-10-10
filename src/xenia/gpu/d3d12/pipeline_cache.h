@@ -106,11 +106,10 @@ class PipelineCache : public GuestSpirvShaderCache::Host {
       SpirvShader& shader, uint64_t spirv_modification);
   // Translates an already-created Translation to SPIR-V using the given
   // translator (the main thread's for vertex shaders, a creation thread's for
-  // pixel shaders). use_try_claim coordinates concurrent translation of the
-  // same Translation. Returns the valid Translation or nullptr. Any thread.
+  // pixel shaders). Concurrent callers translate it once, the rest waiting for
+  // the winner. Returns the valid Translation or nullptr. Any thread.
   Shader::Translation* TranslateGuestMesaSpirv(
-      SpirvShaderTranslator& translator, Shader::Translation& translation,
-      bool use_try_claim);
+      SpirvShaderTranslator& translator, Shader::Translation& translation);
   // Main-thread convenience: ensure + translate on the shared translator.
   Shader::Translation* EnsureGuestMesaSpirv(SpirvShader& shader,
                                             uint64_t spirv_modification);
@@ -444,12 +443,11 @@ class PipelineCache : public GuestSpirvShaderCache::Host {
   // SpirvShader translation objects must already exist (created on the main
   // thread via EnsureGuestMesaSpirvTranslation). The ucode->SPIR-V translation
   // and SPIR-V->DXIL conversion run on the given translator's thread, so this
-  // is called on a creation thread for the warm-up (use_try_claim coordinates
-  // concurrent translation). Returns false on any translation failure.
+  // is called on a creation thread for the warm-up. Returns false on any
+  // translation failure.
   bool BuildMesaPipelineDxil(Shader::Translation* vertex_translation,
                              Shader::Translation* pixel_translation,
                              SpirvShaderTranslator& translator,
-                             bool use_try_claim,
                              PipelineRuntimeDescription& runtime_description);
 
   // If draw_util::IsRasterizationPotentiallyDone is false, the pixel shader
@@ -599,11 +597,9 @@ class PipelineCache : public GuestSpirvShaderCache::Host {
   // thread, or the processor thread in blocking mode). Storage warm-up
   // pipelines defer the whole build. Live async pipelines defer only the pixel
   // shader. The translation runs on mesa_spirv_translator (one per creation
-  // thread). use_try_claim coordinates concurrent translation of the same
-  // shader.
+  // thread).
   void EnsurePipelineShadersTranslated(
-      Pipeline* pipeline, SpirvShaderTranslator* mesa_spirv_translator,
-      bool use_try_claim);
+      Pipeline* pipeline, SpirvShaderTranslator* mesa_spirv_translator);
 
   // All previously generated pipelines identified by hash and the description.
   std::unordered_multimap<uint64_t, Pipeline*,

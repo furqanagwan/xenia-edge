@@ -446,8 +446,7 @@ void PipelineCache::InitializeShaderStorage(
         if (BuildMesaPipelineDxil(
                 new_pipeline->description.mesa_vertex_translation,
                 new_pipeline->description.mesa_pixel_translation,
-                guest_shader_cache_.translator(), /*use_try_claim=*/false,
-                new_pipeline->description)) {
+                guest_shader_cache_.translator(), new_pipeline->description)) {
           new_pipeline->state.store(
               CreateD3D12Pipeline(new_pipeline->description),
               std::memory_order_release);
@@ -664,20 +663,14 @@ Shader::Translation* PipelineCache::EnsureGuestMesaSpirvTranslation(
 }
 
 Shader::Translation* PipelineCache::TranslateGuestMesaSpirv(
-    SpirvShaderTranslator& translator, Shader::Translation& translation,
-    bool use_try_claim) {
+    SpirvShaderTranslator& translator, Shader::Translation& translation) {
   if (!translation.is_translated()) {
-    bool should_translate = true;
-    if (use_try_claim) {
-      should_translate = translation.TryClaimTranslation();
-      if (!should_translate) {
-        // Another thread is translating this same modification - wait for it.
-        while (!translation.is_translated()) {
-          std::this_thread::yield();
-        }
+    if (!translation.TryClaimTranslation()) {
+      // Another thread is translating this same modification. Wait for it.
+      while (!translation.is_translated()) {
+        std::this_thread::yield();
       }
-    }
-    if (should_translate) {
+    } else {
       CreationQueue::BusyScope busy_scope(creation_queue_);
       uint64_t ucode_hash = translation.shader().ucode_data_hash();
       bool profile = cvars::shader_profiling;
@@ -715,8 +708,8 @@ Shader::Translation* PipelineCache::EnsureGuestMesaSpirv(
     SpirvShader& shader, uint64_t spirv_modification) {
   Shader::Translation* translation =
       EnsureGuestMesaSpirvTranslation(shader, spirv_modification);
-  return TranslateGuestMesaSpirv(guest_shader_cache_.translator(), *translation,
-                                 /*use_try_claim=*/false);
+  return TranslateGuestMesaSpirv(guest_shader_cache_.translator(),
+                                 *translation);
 }
 
 const std::vector<uint8_t>* PipelineCache::ConvertGuestMesaSpirvToDxil(
@@ -1058,7 +1051,7 @@ PipelineCache::ConvertGuestMesaTessellationToDxil(
 bool PipelineCache::BuildMesaPipelineDxil(
     Shader::Translation* vertex_translation,
     Shader::Translation* pixel_translation, SpirvShaderTranslator& translator,
-    bool use_try_claim, PipelineRuntimeDescription& runtime_description) {
+    PipelineRuntimeDescription& runtime_description) {
   const PipelineDescription& description = runtime_description.description;
   SpirvShaderTranslator::Modification vs_modification(
       description.vertex_shader_modification);
@@ -1069,7 +1062,7 @@ bool PipelineCache::BuildMesaPipelineDxil(
   // ucode->SPIR-V translation and the SPIR-V->DXIL conversion run here on the
   // given translator's thread (a creation thread for the storage warm-up).
   Shader::Translation* vertex_spirv =
-      TranslateGuestMesaSpirv(translator, *vertex_translation, use_try_claim);
+      TranslateGuestMesaSpirv(translator, *vertex_translation);
   if (!vertex_spirv) {
     return false;
   }
@@ -1103,7 +1096,7 @@ bool PipelineCache::BuildMesaPipelineDxil(
 
   if (pixel_translation != nullptr) {
     Shader::Translation* pixel_spirv =
-        TranslateGuestMesaSpirv(translator, *pixel_translation, use_try_claim);
+        TranslateGuestMesaSpirv(translator, *pixel_translation);
     if (pixel_spirv) {
       runtime_description.mesa_pixel_dxil = ConvertGuestMesaSpirvToDxil(
           pixel_translation->shader().ucode_data_hash(),
@@ -1342,8 +1335,7 @@ bool PipelineCache::ConfigurePipeline(
     } else {
       // Sync mode (no creation threads): translate the pixel SPIR-V here.
       Shader::Translation* pixel_spirv = TranslateGuestMesaSpirv(
-          guest_shader_cache_.translator(), *pixel_ps_translation,
-          /*use_try_claim=*/false);
+          guest_shader_cache_.translator(), *pixel_ps_translation);
       if (pixel_spirv) {
         runtime_description.mesa_pixel_dxil = ConvertGuestMesaSpirvToDxil(
             pixel_shader->shader().ucode_data_hash(), pixel_spirv_modification,
@@ -1983,8 +1975,7 @@ bool PipelineCache::GetGeometryShaderKey(
 }
 
 void PipelineCache::EnsurePipelineShadersTranslated(
-    Pipeline* pipeline, SpirvShaderTranslator* mesa_spirv_translator,
-    bool use_try_claim) {
+    Pipeline* pipeline, SpirvShaderTranslator* mesa_spirv_translator) {
   PipelineRuntimeDescription& desc = pipeline->description;
 
   // Storage warm-up pipelines defer the entire DXIL build to here, off the main
@@ -1996,7 +1987,7 @@ void PipelineCache::EnsurePipelineShadersTranslated(
       mesa_spirv_translator) {
     BuildMesaPipelineDxil(desc.mesa_vertex_translation,
                           desc.mesa_pixel_translation, *mesa_spirv_translator,
-                          use_try_claim, desc);
+                          desc);
     return;
   }
 
@@ -2008,7 +1999,7 @@ void PipelineCache::EnsurePipelineShadersTranslated(
     if (desc.mesa_pixel_translation && !desc.mesa_pixel_dxil &&
         mesa_spirv_translator) {
       Shader::Translation* pixel_spirv = TranslateGuestMesaSpirv(
-          *mesa_spirv_translator, *desc.mesa_pixel_translation, use_try_claim);
+          *mesa_spirv_translator, *desc.mesa_pixel_translation);
       if (pixel_spirv) {
         desc.mesa_pixel_dxil = ConvertGuestMesaSpirvToDxil(
             pixel_spirv->shader().ucode_data_hash(),
@@ -2554,8 +2545,7 @@ const std::vector<uint8_t>* PipelineCache::GetMesaRovPlaceholderPixelShader(
 ID3D12PipelineState* PipelineCache::CreateQueuedPipeline(
     Pipeline* pipeline, SpirvShaderTranslator* mesa_spirv_translator) {
   // Build the deferred DXIL off the main thread.
-  EnsurePipelineShadersTranslated(pipeline, mesa_spirv_translator,
-                                  /*use_try_claim=*/true);
+  EnsurePipelineShadersTranslated(pipeline, mesa_spirv_translator);
   return CreateD3D12Pipeline(pipeline->description);
 }
 
